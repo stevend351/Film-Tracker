@@ -378,7 +378,7 @@ function FlavorGapCard({
 
           {short && (
             <div
-              className="mt-2 flex items-center gap-1.5 text-[11px] text-destructive"
+              className="mt-2 flex items-center gap-1.5 text-[11px] text-rose-700 dark:text-rose-300"
               data-testid={`gap-short-${gap.flavor.slug}`}
             >
               <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
