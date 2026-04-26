@@ -4,7 +4,7 @@ import { apiRequest } from '@/lib/queryClient';
 import { toast } from '@/hooks/use-toast';
 import type {
   Flavor, Shipment, WarehousePool, Roll, UsageEvent,
-  ProductionPlan, KitchenPhoto, PickListLine, Location,
+  ProductionPlan, ProductionPlanRow, KitchenPhoto, PickListLine, Location,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -159,8 +159,16 @@ export interface NeededLine {
   order_no: string | null;        // pulled from the shipment
 }
 
+// The currently locked production run, if any. Single-LOCKED-plan invariant
+// is enforced server-side; the client just picks whichever plan is LOCKED.
+export function activePlan(state: State): ProductionPlan | null {
+  return state.plans.find(p => p.status === 'LOCKED') ?? null;
+}
+
 export function computeStillNeeded(state: State): NeededLine[] {
-  const plan = state.plans[0]; // server returns most recent first
+  // Only the active (locked) plan drives staging. A finished plan should
+  // not pull more rolls.
+  const plan = activePlan(state);
   if (!plan) return [];
 
   const inv = flavorInventory(state);
@@ -270,6 +278,12 @@ export interface StoreActions {
   ) => Promise<StageRollVerifiedResult | StageRollVerifiedError>;
   // Wipe all operational data. Admin only.
   wipeData: () => Promise<void>;
+  // Append rows to the active locked plan.
+  extendActivePlan: (rows: ProductionPlanRow[]) => Promise<{ ok: boolean; error?: string }>;
+  // Delete a plan by id. Admin only. Detaches rolls + usage events.
+  deletePlan: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  // Mark the active locked plan FINISHED. Locks out further attribution.
+  finishActivePlan: () => Promise<{ ok: boolean; error?: string }>;
   // Steven: log impressions used on the machine. Photo of re-taped ID is
   // required. Server promotes STAGED -> IN_USE on first usage, anything ->
   // DEPLETED at zero remaining.
@@ -367,6 +381,33 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: invalidate,
     onError: onError('Save plan'),
+  });
+
+  const planExtendMut = useMutation({
+    mutationFn: async (vars: { id: string; rows: ProductionPlanRow[] }) => {
+      const res = await apiRequest('PATCH', `/api/plans/${vars.id}`, { rows: vars.rows });
+      return res.json();
+    },
+    onSuccess: invalidate,
+    onError: onError('Add to plan'),
+  });
+
+  const planFinishMut = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest('POST', `/api/plans/${id}/finish`, {});
+      return res.json();
+    },
+    onSuccess: invalidate,
+    onError: onError('Finish run'),
+  });
+
+  const planDeleteMut = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest('DELETE', `/api/plans/${id}`, undefined);
+      return res.json();
+    },
+    onSuccess: invalidate,
+    onError: onError('Delete plan'),
   });
 
   const photoMut = useMutation({
@@ -506,6 +547,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       planMut.mutate(plan);
     },
 
+    async extendActivePlan(rows) {
+      const cur = activePlan(state);
+      if (!cur) return { ok: false, error: 'No active plan to extend' };
+      try {
+        await planExtendMut.mutateAsync({ id: cur.id, rows });
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+
+    async deletePlan(id) {
+      try {
+        await planDeleteMut.mutateAsync(id);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+
+    async finishActivePlan() {
+      const cur = activePlan(state);
+      if (!cur) return { ok: false, error: 'No active plan to finish' };
+      try {
+        await planFinishMut.mutateAsync(cur.id);
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+
     addPhoto(data_url, opts) {
       const photo: KitchenPhoto = {
         id: uuid('ph'),
@@ -524,7 +596,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       queryClient.invalidateQueries({ queryKey: STATE_KEY });
     },
     // The mutation hooks are stable across renders, so depend only on `state`.
-  }), [state, shipmentMut, rollMut, rollPatchMut, usageMut, planMut, photoMut, queryClient]);
+  }), [state, shipmentMut, rollMut, rollPatchMut, usageMut, planMut, planExtendMut, planFinishMut, planDeleteMut, photoMut, queryClient]);
 
   return (
     <StoreContext.Provider value={{ state, actions, isLoading, isError }}>

@@ -1,11 +1,23 @@
 import { useMemo, useState } from 'react';
 import { useLocation } from 'wouter';
-import { Search, ImageOff, ChevronRight } from 'lucide-react';
-import { useStore, flavorInventory, type FlavorInventory } from '@/store/store';
+import { Search, ImageOff, ChevronRight, Flag } from 'lucide-react';
+import { useStore, flavorInventory, activePlan, type FlavorInventory } from '@/store/store';
 import type { RollWithUsage } from '@/store/store';
 import type { KitchenPhoto } from '@/store/types';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 
 // Latest photo per roll (matches Inventory behavior).
@@ -34,13 +46,37 @@ function ageLabel(iso?: string | null): string | null {
 }
 
 export default function LogPickerScreen() {
-  const { state } = useStore();
+  const { state, actions } = useStore();
   const [, setLocation] = useLocation();
+  const { toast } = useToast();
   const [search, setSearch] = useState('');
   const [openFlavorId, setOpenFlavorId] = useState<string | null>(null);
+  const [finishing, setFinishing] = useState(false);
+
+  const active = activePlan(state);
 
   const inv = useMemo(() => flavorInventory(state), [state]);
   const photoByRoll = useMemo(() => latestPhotoByRoll(state.photos), [state.photos]);
+
+  async function handleFinish() {
+    if (finishing) return;
+    setFinishing(true);
+    const result = await actions.finishActivePlan();
+    setFinishing(false);
+    if (result.ok) {
+      toast({
+        title: 'Production run finished',
+        description: 'Logging is closed for this plan. Start a new plan when you are ready.',
+      });
+      setLocation('/plan');
+    } else {
+      toast({
+        title: 'Could not finish run',
+        description: result.error,
+        variant: 'destructive',
+      });
+    }
+  }
 
   // Only flavors with at least one usable kitchen roll.
   const kitchenFlavors = useMemo(() => inv.filter(f => f.kitchen_rolls.length > 0), [inv]);
@@ -77,6 +113,22 @@ export default function LogPickerScreen() {
         />
       </div>
 
+      {active && (
+        <section className="mb-4 rounded-xl border border-card-border bg-card p-3">
+          <div className="flex items-baseline justify-between">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              Active production run
+            </p>
+            <span className="text-[11px] font-mono text-muted-foreground">
+              {new Date(active.production_date).toLocaleDateString()}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Every roll you log here is tagged to this run for recall tracking.
+          </p>
+        </section>
+      )}
+
       {filtered.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border p-8 text-center">
           <p className="text-sm text-muted-foreground">
@@ -108,6 +160,48 @@ export default function LogPickerScreen() {
               onPickRoll={(roll) => setLocation(`/log/${roll.id}`)}
             />
           ))}
+        </div>
+      )}
+
+      {active && (
+        <div className="mt-8 border-t border-border pt-6">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            End of production run
+          </p>
+          <p className="mb-3 text-xs text-muted-foreground">
+            When the run is done, finish it. No more logging will be tagged to this date. Anything left over goes against the next plan.
+          </p>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <button
+                type="button"
+                disabled={finishing}
+                className="hover-elevate active-elevate-2 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md border border-destructive-border bg-destructive/10 text-sm font-semibold text-destructive disabled:opacity-50"
+                data-testid="button-finish-run"
+              >
+                <Flag className="h-4 w-4" />
+                Finish production run
+              </button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Finish this production run?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This locks logging for {new Date(active.production_date).toLocaleDateString()}. Any further logging will count against the next plan you create. You cannot reopen a finished run.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel data-testid="button-finish-cancel">Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={handleFinish}
+                  data-testid="button-finish-confirm"
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  Yes, finish run
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       )}
     </div>

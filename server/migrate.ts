@@ -27,4 +27,20 @@ export async function ensureSchema(): Promise<void> {
     ON rolls (pool_id, roll_no)
     WHERE roll_no IS NOT NULL
   `;
+
+  // Production-run model. A plan is now a run with a lifecycle: LOCKED while
+  // staging+logging happens, FINISHED once Brenda closes it. Every staged
+  // roll and every usage event carries its plan_id for recall traceability.
+  await sql`ALTER TABLE production_plans ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'LOCKED'`;
+  await sql`ALTER TABLE production_plans ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP WITH TIME ZONE`;
+  await sql`ALTER TABLE rolls ADD COLUMN IF NOT EXISTS production_plan_id TEXT`;
+  await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS production_plan_id TEXT`;
+
+  // At most one LOCKED plan at a time. Partial unique index keeps the
+  // database honest, even if the API misses a check.
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS one_locked_plan
+    ON production_plans ((1))
+    WHERE status = 'LOCKED'
+  `;
 }

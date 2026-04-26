@@ -51,7 +51,11 @@ export interface IStorage {
 
   // plans
   listPlans(): Promise<ProductionPlan[]>;
+  getActivePlan(): Promise<ProductionPlan | undefined>;
   upsertPlan(plan: InsertProductionPlan): Promise<ProductionPlan>;
+  finishPlan(id: string): Promise<ProductionPlan | undefined>;
+  deletePlan(id: string): Promise<void>;
+  extendPlan(id: string, additionalRows: { flavor_id: string; batches: number; bars_per_batch: number; buffer_pct: number }[]): Promise<ProductionPlan | undefined>;
 
   // photos
   listPhotos(): Promise<KitchenPhoto[]>;
@@ -204,6 +208,17 @@ export class DatabaseStorage implements IStorage {
         return { roll: existing, pool };
       }
 
+      // 0. Look up the active production run, if any. Stamped onto the roll
+      // for recall traceability. NULL is fine -- free-form staging is allowed.
+      const activePlan = (
+        await tx
+          .select()
+          .from(production_plans)
+          .where(eq(production_plans.status, "LOCKED"))
+          .limit(1)
+      )[0];
+      const activePlanId = activePlan?.id ?? null;
+
       // 1. Find the matching pool. Order by oldest shipment first so FIFO
       // wins when two pools tie on (flavor, order, impressions) -- shouldn't
       // happen in practice but stay defensive.
@@ -296,6 +311,7 @@ export class DatabaseStorage implements IStorage {
           order_no: input.order_no,
           roll_no: input.roll_no,
           production_date: input.production_date ?? null,
+          production_plan_id: activePlanId,
         })
         .returning();
       const roll = rollIns[0];
@@ -367,9 +383,21 @@ export class DatabaseStorage implements IStorage {
     // an offline retry cannot land the event without the status transition
     // (or vice versa).
     return db.transaction(async (tx) => {
+      // Stamp the active production run onto the event for recall trace.
+      const activePlan = (
+        await tx
+          .select()
+          .from(production_plans)
+          .where(eq(production_plans.status, "LOCKED"))
+          .limit(1)
+      )[0];
+      const eventWithPlan = {
+        ...event,
+        production_plan_id: event.production_plan_id ?? activePlan?.id ?? null,
+      };
       const ins = await tx
         .insert(usage_events)
-        .values(event)
+        .values(eventWithPlan)
         .onConflictDoNothing({ target: usage_events.id })
         .returning();
       const wasNew = !!ins[0];
@@ -401,7 +429,26 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(production_plans);
   }
 
+  async getActivePlan(): Promise<ProductionPlan | undefined> {
+    const r = await db
+      .select()
+      .from(production_plans)
+      .where(eq(production_plans.status, "LOCKED"))
+      .limit(1);
+    return r[0];
+  }
+
   async upsertPlan(plan: InsertProductionPlan): Promise<ProductionPlan> {
+    // Single-LOCKED-plan invariant. If a different plan is currently locked,
+    // refuse the insert. The DB has a partial unique index as a backstop, but
+    // checking here gives a clean 409 instead of a Postgres unique-violation.
+    const active = await this.getActivePlan();
+    if (active && active.id !== plan.id) {
+      throw new StagingError(
+        "PLAN_ALREADY_LOCKED",
+        `A production run is already locked (plan ${active.id}, ${active.week_of}). Finish or delete it before starting a new one.`,
+      );
+    }
     // Plans are upserted on id — same week saved twice replaces the rows array.
     const r = await db
       .insert(production_plans)
@@ -413,6 +460,48 @@ export class DatabaseStorage implements IStorage {
       .returning();
     if (!r[0]) throw new Error(`upsertPlan: failed for ${plan.id}`);
     return r[0];
+  }
+
+  async finishPlan(id: string): Promise<ProductionPlan | undefined> {
+    const r = await db
+      .update(production_plans)
+      .set({ status: "FINISHED", finished_at: new Date() })
+      .where(eq(production_plans.id, id))
+      .returning();
+    return r[0];
+  }
+
+  async deletePlan(id: string): Promise<void> {
+    // Detach any rolls/usage_events that referenced this plan, then delete
+    // the plan row. We deliberately do NOT cascade-delete operational data;
+    // the rolls and usage events stay, just unattached.
+    await db.transaction(async (tx) => {
+      await tx.update(rolls).set({ production_plan_id: null }).where(eq(rolls.production_plan_id, id));
+      await tx.update(usage_events).set({ production_plan_id: null }).where(eq(usage_events.production_plan_id, id));
+      await tx.delete(production_plans).where(eq(production_plans.id, id));
+    });
+  }
+
+  async extendPlan(
+    id: string,
+    additionalRows: { flavor_id: string; batches: number; bars_per_batch: number; buffer_pct: number }[],
+  ): Promise<ProductionPlan | undefined> {
+    return db.transaction(async (tx) => {
+      const cur = (
+        await tx.select().from(production_plans).where(eq(production_plans.id, id)).limit(1)
+      )[0];
+      if (!cur) return undefined;
+      if (cur.status !== "LOCKED") {
+        throw new StagingError("PLAN_NOT_LOCKED", "Cannot extend a finished plan.");
+      }
+      const merged = [...(cur.rows ?? []), ...additionalRows];
+      const r = await tx
+        .update(production_plans)
+        .set({ rows: merged })
+        .where(eq(production_plans.id, id))
+        .returning();
+      return r[0];
+    });
   }
 
   // ---- photos -----------------------------------------------------------

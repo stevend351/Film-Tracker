@@ -52,6 +52,8 @@ export interface Roll {
   order_no?: string | null;
   roll_no?: number | null;
   production_date?: string | null; // ISO
+  // Production run this roll was staged against. NULL when staged outside a run.
+  production_plan_id?: string | null;
 }
 
 export interface UsageEvent {
@@ -61,6 +63,8 @@ export interface UsageEvent {
   notes?: string | null;
   created_at: string;
   created_by?: string | null;
+  // Production run this usage was logged against. NULL when logged outside a run.
+  production_plan_id?: string | null;
 }
 
 export interface ProductionPlanRow {
@@ -70,12 +74,16 @@ export interface ProductionPlanRow {
   buffer_pct: number;            // 0.10 = 10%
 }
 
+export type PlanStatus = 'LOCKED' | 'FINISHED';
+
 export interface ProductionPlan {
   id: string;
   week_of: string;               // ISO date of Monday
   rows: ProductionPlanRow[];
   created_by?: string | null;
   created_at?: string;
+  status: PlanStatus;
+  finished_at?: string | null;
 }
 
 export interface PickListLine {

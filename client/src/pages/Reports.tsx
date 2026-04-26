@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { BarChart3, AlertTriangle, Trash2 } from 'lucide-react';
+import { BarChart3, AlertTriangle, Trash2, ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react';
 import { useStore } from '@/store/store';
 import { useAuth } from '@/store/auth';
 import { useToast } from '@/hooks/use-toast';
@@ -263,8 +263,189 @@ export default function ReportsScreen() {
         Waste threshold: 5%. Rows above the threshold are highlighted. Override flag is set on Inventory when extra wrap pushes a roll past nominal capacity.
       </p>
 
+      <RecallTrace />
+
       <DangerZone />
     </div>
+  );
+}
+
+// Per-plan recall trace. For each production plan (LOCKED or FINISHED),
+// show every roll tagged to that plan and every usage event tagged to that
+// plan. This is the single screen Brenda or an FDA inspector would open
+// when a recall hits a specific lot.
+function RecallTrace() {
+  const { state } = useStore();
+  const [openPlanId, setOpenPlanId] = useState<string | null>(null);
+
+  // Sort plans newest first.
+  const plans = useMemo(() => {
+    return [...state.plans].sort(
+      (a, b) => new Date(b.production_date).getTime() - new Date(a.production_date).getTime(),
+    );
+  }, [state.plans]);
+
+  const flavorById = useMemo(
+    () => new Map(state.flavors.map(f => [f.id, f])),
+    [state.flavors],
+  );
+
+  if (plans.length === 0) {
+    return (
+      <section className="mt-10 rounded-xl border border-card-border bg-card p-4">
+        <h3 className="flex items-center gap-2 text-sm font-semibold">
+          <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+          Recall trace
+        </h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          No production plans yet. Once you lock a plan, every roll staged and every batch logged against it shows up here for recall lookups.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="mt-10">
+      <header className="mb-3">
+        <h3 className="flex items-center gap-2 text-sm font-semibold">
+          <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+          Recall trace
+        </h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Every roll and every batch is tagged to the production plan it ran against. Open a plan to see exactly which rolls were used.
+        </p>
+      </header>
+
+      <div className="space-y-2">
+        {plans.map(plan => {
+          const planRolls = state.rolls.filter(r => r.production_plan_id === plan.id);
+          const planUsage = state.usage.filter(u => u.production_plan_id === plan.id);
+          const isOpen = openPlanId === plan.id;
+          const status = plan.status ?? 'LOCKED';
+          return (
+            <div
+              key={plan.id}
+              className="overflow-hidden rounded-xl border border-card-border bg-card"
+              data-testid={`recall-plan-${plan.id}`}
+            >
+              <button
+                type="button"
+                onClick={() => setOpenPlanId(prev => (prev === plan.id ? null : plan.id))}
+                className="hover-elevate active-elevate-2 flex w-full items-center gap-3 px-4 py-3 text-left"
+                data-testid={`recall-toggle-${plan.id}`}
+              >
+                {isOpen ? (
+                  <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-sm font-semibold">
+                      {new Date(plan.production_date).toLocaleDateString()}
+                    </span>
+                    <span
+                      className={cn(
+                        'rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                        status === 'LOCKED'
+                          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400'
+                          : 'bg-muted text-muted-foreground',
+                      )}
+                    >
+                      {status === 'LOCKED' ? 'active' : 'finished'}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] font-mono text-muted-foreground">
+                    {planRolls.length} roll{planRolls.length === 1 ? '' : 's'}
+                    <span className="mx-1.5">·</span>
+                    {planUsage.length} usage event{planUsage.length === 1 ? '' : 's'}
+                  </p>
+                </div>
+              </button>
+
+              {isOpen && (
+                <div className="border-t border-card-border bg-background/40 px-4 py-3 space-y-4">
+                  {/* Rolls staged against this plan */}
+                  <div>
+                    <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Rolls tagged to this run ({planRolls.length})
+                    </p>
+                    {planRolls.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No rolls have been staged against this plan yet.
+                      </p>
+                    ) : (
+                      <div className="space-y-1">
+                        {planRolls.map(r => {
+                          const flavor = flavorById.get(r.flavor_id);
+                          return (
+                            <div
+                              key={r.id}
+                              className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-xs"
+                              data-testid={`recall-roll-${r.short_code}`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="font-mono font-semibold">{r.short_code}</span>
+                                <span className="truncate text-muted-foreground">
+                                  {flavor?.name ?? r.flavor_id}
+                                </span>
+                              </div>
+                              <div className="font-mono text-[11px] text-muted-foreground">
+                                {r.order_no ?? '—'} · #{r.roll_no}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Usage events tagged to this plan */}
+                  <div>
+                    <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Usage events ({planUsage.length})
+                    </p>
+                    {planUsage.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No usage logged against this plan yet.
+                      </p>
+                    ) : (
+                      <div className="space-y-1">
+                        {planUsage
+                          .slice()
+                          .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+                          .map(u => {
+                            const roll = state.rolls.find(r => r.id === u.roll_id);
+                            return (
+                              <div
+                                key={u.id}
+                                className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-2 text-xs"
+                                data-testid={`recall-usage-${u.id}`}
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="font-mono font-semibold">
+                                    {roll?.short_code ?? u.roll_id}
+                                  </span>
+                                  <span className="text-muted-foreground">
+                                    {new Date(u.created_at).toLocaleString()}
+                                  </span>
+                                </div>
+                                <div className="font-mono text-[11px] text-muted-foreground">
+                                  {u.impressions_used.toLocaleString()} imp
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

@@ -37,10 +37,10 @@ export default function LogUsageScreen() {
       <div className="px-4 py-6">
         <p className="text-sm text-muted-foreground">Roll not found.</p>
         <button
-          onClick={() => setLocation('/')}
+          onClick={() => setLocation('/log')}
           className="mt-3 text-sm font-medium text-primary"
         >
-          ← Back to Inventory
+          ← Back to Log
         </button>
       </div>
     );
@@ -66,7 +66,8 @@ export default function LogUsageScreen() {
       title: willDeplete ? 'Roll depleted' : 'Usage logged',
       description: `${amount.toLocaleString()} imp on ${enriched!.short_code}`,
     });
-    setLocation('/');
+    // Stay in the logging flow. Brenda is logging continuously during a run.
+    setLocation('/log');
   }
 
   return (
@@ -74,12 +75,12 @@ export default function LogUsageScreen() {
       <header className="mb-4">
         <button
           type="button"
-          onClick={() => setLocation('/')}
+          onClick={() => setLocation('/log')}
           className="hover-elevate -ml-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium text-muted-foreground"
           data-testid="button-back"
         >
           <ChevronLeft className="h-4 w-4" />
-          Inventory
+          All rolls
         </button>
         <div className="mt-2 flex items-baseline justify-between">
           <h1 className="text-xl font-semibold tracking-tight">Log Usage</h1>

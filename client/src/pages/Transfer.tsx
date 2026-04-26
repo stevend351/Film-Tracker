@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'wouter';
 import { CheckCircle2, ChevronRight, ArrowLeft, PartyPopper } from 'lucide-react';
-import { useStore, computeStillNeeded } from '@/store/store';
+import { useStore, computeStillNeeded, activePlan } from '@/store/store';
 import type { Roll } from '@/store/types';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -27,7 +27,8 @@ type FocusKey = { flavorId: string; poolId: string };
 export default function TransferScreen() {
   const { state } = useStore();
   const needed = useMemo(() => computeStillNeeded(state), [state]);
-  const hasPlan = state.plans.length > 0;
+  const active = activePlan(state);
+  const hasPlan = !!active;
 
   const [focus, setFocus] = useState<FocusKey | null>(null);
 
@@ -76,15 +77,15 @@ function PlanCompleteView() {
         <PartyPopper className="h-10 w-10 text-emerald-600 dark:text-emerald-400 mx-auto" />
         <h2 className="mt-3 text-lg font-semibold">Plan fully staged</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          Every roll for this production date is tagged and at the kitchen.
+          Every roll for this production date is tagged and at the kitchen. Time to log usage.
         </p>
         <button
           type="button"
-          onClick={() => setLocation('/plan')}
+          onClick={() => setLocation('/log')}
           className="hover-elevate active-elevate-2 mt-5 inline-flex h-11 items-center justify-center gap-2 rounded-md border border-primary-border bg-primary px-5 text-sm font-semibold text-primary-foreground"
-          data-testid="button-new-plan"
+          data-testid="button-go-log"
         >
-          Start a new plan
+          Go to Log usage
         </button>
       </section>
     </div>

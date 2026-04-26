@@ -81,6 +81,9 @@ export const rolls = pgTable("rolls", {
   order_no: text("order_no"),
   roll_no: integer("roll_no"),
   production_date: timestamp("production_date", { withTimezone: true }),
+  // The production run this roll was staged for. NULL if staged outside a
+  // run (free-form). Used for recall traceability.
+  production_plan_id: text("production_plan_id"),
 });
 
 // ---------------------------------------------------------------------------
@@ -93,6 +96,9 @@ export const usage_events = pgTable("usage_events", {
   notes: text("notes"),
   created_by: text("created_by").references(() => users.id, { onDelete: "restrict" }),
   created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // The production run this usage was logged against. NULL if logged outside
+  // a run. This is the recall trail.
+  production_plan_id: text("production_plan_id"),
 });
 
 // ---------------------------------------------------------------------------
@@ -101,10 +107,14 @@ export const usage_events = pgTable("usage_events", {
 // ---------------------------------------------------------------------------
 export const production_plans = pgTable("production_plans", {
   id: text("id").primaryKey(),
-  week_of: text("week_of").notNull(), // ISO date (YYYY-MM-DD) of Monday
+  week_of: text("week_of").notNull(), // production date (YYYY-MM-DD)
   rows: jsonb("rows").notNull().$type<{ flavor_id: string; batches: number; bars_per_batch: number; buffer_pct: number }[]>(),
   created_by: text("created_by").references(() => users.id, { onDelete: "restrict" }),
   created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  // Lifecycle. LOCKED = active run, accepts staging + usage. FINISHED = closed,
+  // no more usage attributed. Only one LOCKED plan exists at a time.
+  status: text("status").notNull().default("LOCKED"),
+  finished_at: timestamp("finished_at", { withTimezone: true }),
 });
 
 // ---------------------------------------------------------------------------
@@ -171,6 +181,8 @@ export const insertProductionPlanSchema = createInsertSchema(production_plans).o
     bars_per_batch: z.number(),
     buffer_pct: z.number(),
   })),
+  status: z.enum(["LOCKED", "FINISHED"]).default("LOCKED").optional(),
+  finished_at: z.coerce.date().nullable().optional(),
 });
 
 export const insertKitchenPhotoSchema = createInsertSchema(kitchen_photos).extend({

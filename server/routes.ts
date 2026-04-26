@@ -163,8 +163,55 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ error: "Invalid plan", details: parsed.error.flatten() });
     }
     const plan = { ...parsed.data, created_by: req.user!.id };
-    const result = await storage.upsertPlan(plan);
+    try {
+      const result = await storage.upsertPlan(plan);
+      res.json(result);
+    } catch (err) {
+      if (err instanceof StagingError) {
+        return res.status(err.status).json({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
+  });
+
+  // Finish the current production run. Locks out further attribution.
+  app.post("/api/plans/:id/finish", requireAuth, async (req: Request, res: Response) => {
+    const result = await storage.finishPlan(String(req.params.id));
+    if (!result) return res.status(404).json({ error: "Plan not found" });
     res.json(result);
+  });
+
+  // Append rows to a LOCKED plan. Used when staging reveals additional flavor
+  // demand that wasn't in the original plan.
+  const extendPlanSchema = z.object({
+    rows: z.array(z.object({
+      flavor_id: z.string(),
+      batches: z.number(),
+      bars_per_batch: z.number(),
+      buffer_pct: z.number(),
+    })),
+  });
+  app.patch("/api/plans/:id", requireAdmin, async (req: Request, res: Response) => {
+    const parsed = extendPlanSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid extension", details: parsed.error.flatten() });
+    }
+    try {
+      const result = await storage.extendPlan(String(req.params.id), parsed.data.rows);
+      if (!result) return res.status(404).json({ error: "Plan not found" });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof StagingError) {
+        return res.status(err.status).json({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
+  });
+
+  // Delete a plan (any status). Detaches rolls/usage events but keeps them.
+  app.delete("/api/plans/:id", requireAdmin, async (req: Request, res: Response) => {
+    await storage.deletePlan(String(req.params.id));
+    res.json({ ok: true });
   });
 
   // -------------------------------------------------------------------------
