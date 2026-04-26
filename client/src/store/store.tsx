@@ -165,6 +165,71 @@ export function activePlan(state: State): ProductionPlan | null {
   return state.plans.find(p => p.status === 'LOCKED') ?? null;
 }
 
+// Per-flavor gap analysis for the active locked plan. Returns one PlanGap per
+// row with kitchen-on-hand, gap, and FIFO warehouse picks. This is the data
+// the Stage page renders so Brenda sees exactly what she has and what to pull.
+export interface PlanGap {
+  flavor: Flavor;
+  needed_imp: number;            // batches * bars/batch * (1 + buffer)
+  kitchen_rolls: RollWithUsage[]; // current kitchen rolls for this flavor
+  kitchen_imp: number;           // sum of impressions_remaining on kitchen rolls
+  gap_imp: number;               // max(0, needed - kitchen)
+  picks: NeededLine[];           // FIFO warehouse pulls to close the gap
+  warehouse_imp_available: number; // total imp available across warehouse pools
+  short_imp: number;             // max(0, gap - warehouse_available)
+}
+
+export function computePlanGaps(state: State): PlanGap[] {
+  const plan = activePlan(state);
+  if (!plan) return [];
+
+  const inv = flavorInventory(state);
+  const out: PlanGap[] = [];
+
+  for (const row of plan.rows) {
+    const flavor = state.flavors.find(f => f.id === row.flavor_id);
+    const inv_for = inv.find(i => i.flavor.id === row.flavor_id);
+    if (!flavor || !inv_for) continue;
+
+    const needed_imp = Math.ceil(row.batches * row.bars_per_batch * (1 + row.buffer_pct));
+    const kitchen_imp = inv_for.kitchen_remaining;
+    const gap_imp = Math.max(0, needed_imp - kitchen_imp);
+
+    const picks_raw = gap_imp > 0 ? buildPickList(state, row.flavor_id, gap_imp) : [];
+    const picks: NeededLine[] = [];
+    for (const p of picks_raw) {
+      const pool = state.pools.find(x => x.id === p.pool_id);
+      const shipment = pool ? state.shipments.find(s => s.id === pool.shipment_id) : null;
+      if (!pool) continue;
+      picks.push({
+        flavor,
+        pool,
+        shipment_received_at: p.shipment_received_at,
+        rolls_to_pull: p.rolls_to_pull,
+        impressions_per_roll: p.impressions_per_roll,
+        order_no: shipment?.order_no ?? null,
+      });
+    }
+
+    const warehouse_imp_available = inv_for.warehouse_impressions_remaining;
+    const can_pull_imp = picks.reduce((s, p) => s + p.rolls_to_pull * p.impressions_per_roll, 0);
+    const short_imp = Math.max(0, gap_imp - can_pull_imp);
+
+    out.push({
+      flavor,
+      needed_imp,
+      kitchen_rolls: inv_for.kitchen_rolls,
+      kitchen_imp,
+      gap_imp,
+      picks,
+      warehouse_imp_available,
+      short_imp,
+    });
+  }
+
+  return out;
+}
+
 export function computeStillNeeded(state: State): NeededLine[] {
   // Only the active (locked) plan drives staging. A finished plan should
   // not pull more rolls.
@@ -295,6 +360,9 @@ export interface StoreActions {
     override?: boolean,
   ) => { ok: boolean; error?: string };
   setOverride: (roll_id: string, on: boolean) => void;
+  // Mark a roll DEPLETED without logging usage. Used when a kitchen roll has
+  // so few impressions left it's not worth bothering with.
+  markRollDepleted: (roll_id: string) => void;
   savePlan: (plan: ProductionPlan) => void;
   // Free-form photo entry (for the legacy Photos page). New flows use
   // stageRoll / logUsage which embed the photo automatically.
@@ -541,6 +609,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     setOverride(roll_id, on) {
       rollPatchMut.mutate({ id: roll_id, patch: { override_extra_wrap: on } });
+    },
+
+    markRollDepleted(roll_id) {
+      rollPatchMut.mutate({ id: roll_id, patch: { status: 'DEPLETED' } });
     },
 
     savePlan(plan) {

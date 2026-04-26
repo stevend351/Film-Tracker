@@ -81,6 +81,20 @@ export default function LogPickerScreen() {
   // Only flavors with at least one usable kitchen roll.
   const kitchenFlavors = useMemo(() => inv.filter(f => f.kitchen_rolls.length > 0), [inv]);
 
+  // Leftover summary for the Finish dialog. Every kitchen roll with imp left
+  // returns to the pool for next week's plan, so Steven can see what's about
+  // to roll over before he confirms.
+  const leftoverRolls = useMemo<RollWithUsage[]>(() => {
+    const out: RollWithUsage[] = [];
+    for (const f of inv) {
+      for (const r of f.kitchen_rolls) {
+        if (r.impressions_remaining > 0) out.push(r);
+      }
+    }
+    return out.sort((a, b) => b.impressions_remaining - a.impressions_remaining);
+  }, [inv]);
+  const leftoverImp = leftoverRolls.reduce((s, r) => s + r.impressions_remaining, 0);
+
   const q = search.trim().toLowerCase();
   const filtered = q
     ? kitchenFlavors.filter(f =>
@@ -187,9 +201,39 @@ export default function LogPickerScreen() {
               <AlertDialogHeader>
                 <AlertDialogTitle>Finish this production run?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  This locks logging for {new Date(active.production_date).toLocaleDateString()}. Any further logging will count against the next plan you create. You cannot reopen a finished run.
+                  This locks logging for {new Date(active.week_of).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}. Any further logging will count against the next plan you create. You cannot reopen a finished run.
                 </AlertDialogDescription>
               </AlertDialogHeader>
+
+              {leftoverRolls.length > 0 && (
+                <div className="rounded-md border border-border bg-background/40 p-3">
+                  <div className="flex items-baseline justify-between">
+                    <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Leftover at kitchen
+                    </p>
+                    <span className="font-mono text-[11px] font-semibold text-foreground">
+                      {leftoverRolls.length} {leftoverRolls.length === 1 ? 'roll' : 'rolls'} · {leftoverImp.toLocaleString()} imp
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    These return to the kitchen pool for next week's plan.
+                  </p>
+                  <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto pr-1">
+                    {leftoverRolls.map(r => (
+                      <li
+                        key={r.id}
+                        className="flex items-center justify-between gap-2 rounded-sm bg-card px-2 py-1"
+                        data-testid={`leftover-${r.short_code}`}
+                      >
+                        <span className="font-mono text-[11px] font-semibold">{r.short_code}</span>
+                        <span className="font-mono text-[11px] text-muted-foreground">
+                          {r.flavor.prefix} · {r.impressions_remaining.toLocaleString()} imp
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <AlertDialogFooter>
                 <AlertDialogCancel data-testid="button-finish-cancel">Cancel</AlertDialogCancel>
                 <AlertDialogAction

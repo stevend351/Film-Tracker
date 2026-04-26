@@ -1,10 +1,27 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation } from 'wouter';
-import { CheckCircle2, ChevronRight, ArrowLeft, PartyPopper } from 'lucide-react';
-import { useStore, computeStillNeeded, activePlan } from '@/store/store';
+import { CheckCircle2, ChevronRight, ArrowLeft, PartyPopper, Trash2, AlertTriangle } from 'lucide-react';
+import {
+  useStore,
+  computeStillNeeded,
+  computePlanGaps,
+  activePlan,
+  type PlanGap,
+  type RollWithUsage,
+} from '@/store/store';
 import type { Roll } from '@/store/types';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { cn } from '@/lib/utils';
 import { PhotoCapture } from '@/components/PhotoCapture';
 import { Input } from '@/components/ui/input';
@@ -12,20 +29,18 @@ import { Label } from '@/components/ui/label';
 
 // Stage screen has three states:
 //
-//   1. Plan-driven LIST: a checklist of (flavor, pool) lines still owed.
-//   2. Plan-driven FOCUS: tap a row to drill in. Form is pre-locked to that
-//      flavor + order# + impressions_per_roll. Brenda only types Roll # +
-//      Date and snaps the photo. The line shrinks each save and pops back
-//      to the list when complete.
-//   3. Plan satisfied / no plan: free-form staging (the original flow).
-//
-// The flavor picker only shows when there's no plan. With a plan, picking
-// is the row tap.
+//   1. Plan-driven LIST: per-flavor cards showing kitchen-on-hand vs gap and
+//      FIFO warehouse picks. Brenda sees exactly what's needed and what to
+//      pull. Tap a warehouse pick to drill into label-driven staging.
+//   2. Plan-driven FOCUS: the existing label-verified staging form, locked
+//      to the selected (flavor, pool) line.
+//   3. No plan: free-form staging (the original flow).
 
 type FocusKey = { flavorId: string; poolId: string };
 
 export default function TransferScreen() {
   const { state } = useStore();
+  const gaps = useMemo(() => computePlanGaps(state), [state]);
   const needed = useMemo(() => computeStillNeeded(state), [state]);
   const active = activePlan(state);
   const hasPlan = !!active;
@@ -33,7 +48,7 @@ export default function TransferScreen() {
   const [focus, setFocus] = useState<FocusKey | null>(null);
 
   // If user is focused on a line and that line just got fully staged, drop
-  // the focus so the list can re-appear (or the "all done" screen).
+  // the focus so the gap view can re-appear (or the "all done" screen).
   const focusedLine = focus
     ? needed.find(n => n.flavor.id === focus.flavorId && n.pool.id === focus.poolId)
     : null;
@@ -47,24 +62,25 @@ export default function TransferScreen() {
   }
 
   if (hasPlan && focusedLine) {
+    return <FocusView line={focusedLine} onBack={() => setFocus(null)} />;
+  }
+
+  if (hasPlan && active) {
     return (
-      <FocusView
-        line={focusedLine}
-        onBack={() => setFocus(null)}
+      <PlanGapView
+        gaps={gaps}
+        productionDate={active.week_of}
+        onPickLine={(flavorId, poolId) => setFocus({ flavorId, poolId })}
       />
     );
   }
 
-  if (hasPlan) {
-    return <PlanListView needed={needed} onPickLine={(l) => setFocus({ flavorId: l.flavor.id, poolId: l.pool.id })} />;
-  }
-
-  // No plan -> free-form staging (label-driven, same as before).
+  // No plan -> free-form staging.
   return <FreeStageView />;
 }
 
 // ---------------------------------------------------------------------------
-// Plan complete: every needed roll has been staged. CTA back to Plan.
+// Plan complete: every needed roll has been staged. CTA to log usage.
 // ---------------------------------------------------------------------------
 function PlanCompleteView() {
   const [, setLocation] = useLocation();
@@ -93,66 +109,245 @@ function PlanCompleteView() {
 }
 
 // ---------------------------------------------------------------------------
-// LIST VIEW: needed lines, tap to focus.
+// PLAN GAP VIEW: one card per flavor row in the active plan. Each card shows
+// needed-vs-kitchen-on-hand and FIFO warehouse picks to close the gap.
 // ---------------------------------------------------------------------------
-function PlanListView({
-  needed,
+function PlanGapView({
+  gaps,
+  productionDate,
   onPickLine,
 }: {
-  needed: ReturnType<typeof computeStillNeeded>;
-  onPickLine: (line: ReturnType<typeof computeStillNeeded>[number]) => void;
+  gaps: PlanGap[];
+  productionDate: string;
+  onPickLine: (flavorId: string, poolId: string) => void;
 }) {
-  const total = needed.reduce((s, l) => s + l.rolls_to_pull, 0);
+  const totalToPull = gaps.reduce(
+    (s, g) => s + g.picks.reduce((ss, p) => ss + p.rolls_to_pull, 0),
+    0,
+  );
+
   return (
     <div className="px-4 py-4 pb-32">
       <header className="mb-4">
         <h1 className="text-xl font-semibold tracking-tight">Stage Rolls</h1>
         <p className="text-xs text-muted-foreground">
-          Pick a flavor below and tag rolls one at a time.
+          For production date <span className="font-mono">{fmtDate(productionDate)}</span>.
         </p>
       </header>
 
-      <section className="rounded-xl border border-card-border bg-card p-3">
-        <div className="flex items-baseline justify-between mb-2">
+      <section className="mb-4 rounded-xl border border-card-border bg-card p-3">
+        <div className="flex items-baseline justify-between">
           <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Needed now
+            Pull plan
           </p>
           <span className="text-[11px] font-mono text-muted-foreground">
-            {total} {total === 1 ? 'roll' : 'rolls'} left
+            {totalToPull} {totalToPull === 1 ? 'roll' : 'rolls'} to tag
           </span>
         </div>
-        <div className="space-y-1.5">
-          {needed.map((line, i) => (
-            <button
-              key={`${line.pool.id}-${i}`}
-              type="button"
-              onClick={() => onPickLine(line)}
-              className="hover-elevate active-elevate-2 flex w-full items-center justify-between rounded-md border border-border bg-background px-3 py-3 text-left"
-              data-testid={`button-needed-${line.flavor.slug}`}
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-sm font-semibold">{line.flavor.name}</span>
-                  <span className="font-mono text-[10px] text-muted-foreground">{line.flavor.prefix}</span>
-                </div>
-                <div className="mt-0.5 flex items-center gap-2 text-[11px] font-mono text-muted-foreground truncate">
-                  <span className="font-semibold text-foreground">
-                    {line.rolls_to_pull} × {line.impressions_per_roll.toLocaleString()} imp
-                  </span>
-                  {line.order_no && <span className="truncate">· {line.order_no}</span>}
-                </div>
-              </div>
-              <ChevronRight className="h-5 w-5 text-muted-foreground shrink-0 ml-2" />
-            </button>
-          ))}
-        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Each card shows what kitchen has, the gap, and what to pull from warehouse (oldest first).
+        </p>
       </section>
+
+      <div className="space-y-3">
+        {gaps.map(gap => (
+          <FlavorGapCard key={gap.flavor.id} gap={gap} onPickPool={onPickLine} />
+        ))}
+      </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// FOCUS VIEW: tag rolls for one (flavor, pool) at a time.
+// One flavor card: needed -> kitchen on hand -> gap -> warehouse picks.
+// ---------------------------------------------------------------------------
+function FlavorGapCard({
+  gap,
+  onPickPool,
+}: {
+  gap: PlanGap;
+  onPickPool: (flavorId: string, poolId: string) => void;
+}) {
+  const covered = gap.gap_imp === 0;
+  const short = gap.short_imp > 0;
+
+  return (
+    <section className="rounded-xl border border-card-border bg-card p-3">
+      {/* Header */}
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 className="text-base font-semibold tracking-tight">{gap.flavor.name}</h2>
+        <span className="font-mono text-[10px] text-muted-foreground">{gap.flavor.prefix}</span>
+      </div>
+      <p className="mt-0.5 text-[11px] font-mono text-muted-foreground">
+        Needed: <span className="font-semibold text-foreground">{gap.needed_imp.toLocaleString()} imp</span>
+      </p>
+
+      {/* Kitchen-on-hand */}
+      <div className="mt-3 rounded-md border border-border bg-background/40 p-2.5">
+        <div className="flex items-baseline justify-between">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            At kitchen
+          </p>
+          <span className="font-mono text-xs font-semibold tabular-nums">
+            {gap.kitchen_imp.toLocaleString()} imp
+          </span>
+        </div>
+        {gap.kitchen_rolls.length === 0 ? (
+          <p className="mt-1 text-[11px] text-muted-foreground">No rolls at kitchen yet.</p>
+        ) : (
+          <ul className="mt-2 space-y-1">
+            {gap.kitchen_rolls.map(roll => (
+              <KitchenRollRow key={roll.id} roll={roll} />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Gap status */}
+      {covered && (
+        <div
+          className="mt-3 flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400"
+          data-testid={`gap-covered-${gap.flavor.slug}`}
+        >
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>Covered by kitchen. Nothing to pull.</span>
+        </div>
+      )}
+
+      {!covered && (
+        <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+          <div className="flex items-baseline justify-between">
+            <p className="text-[11px] font-medium uppercase tracking-wider text-amber-700 dark:text-amber-400">
+              Gap
+            </p>
+            <span className="font-mono text-xs font-semibold text-amber-700 dark:text-amber-400">
+              {gap.gap_imp.toLocaleString()} imp short
+            </span>
+          </div>
+
+          {short && (
+            <div
+              className="mt-2 flex items-center gap-1.5 text-[11px] text-destructive"
+              data-testid={`gap-short-${gap.flavor.slug}`}
+            >
+              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              <span>
+                Warehouse short by {gap.short_imp.toLocaleString()} imp. Pull what's there, then
+                order more or reduce batches.
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Warehouse picks */}
+      {gap.picks.length > 0 && (
+        <div className="mt-3">
+          <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Pull from warehouse · oldest first
+          </p>
+          <ul className="space-y-1.5">
+            {gap.picks.map(pick => (
+              <li key={pick.pool.id}>
+                <button
+                  type="button"
+                  onClick={() => onPickPool(gap.flavor.id, pick.pool.id)}
+                  className="hover-elevate active-elevate-2 flex w-full items-center justify-between rounded-md border border-border bg-background px-3 py-2.5 text-left"
+                  data-testid={`button-pull-${gap.flavor.slug}-${pick.pool.id}`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-mono text-xs font-semibold">
+                        {pick.rolls_to_pull} × {pick.impressions_per_roll.toLocaleString()} imp
+                      </span>
+                      {pick.order_no && (
+                        <span className="truncate text-[10px] font-mono text-muted-foreground">
+                          {pick.order_no}
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      Received {fmtDate(pick.shipment_received_at)}
+                    </p>
+                  </div>
+                  <ChevronRight className="ml-2 h-5 w-5 shrink-0 text-muted-foreground" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// One row inside the kitchen-on-hand list. Shows imp remaining + a "mark
+// depleted" action if the roll has under 100 imp left (Steven's threshold).
+function KitchenRollRow({ roll }: { roll: RollWithUsage }) {
+  const { actions } = useStore();
+  const { toast } = useToast();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const lowImp = roll.impressions_remaining < 100;
+
+  function markDepleted() {
+    actions.markRollDepleted(roll.id);
+    toast({
+      title: 'Roll marked depleted',
+      description: `${roll.short_code} is no longer in the kitchen pool.`,
+    });
+    setConfirmOpen(false);
+  }
+
+  return (
+    <li className="flex items-center justify-between gap-2 rounded-sm bg-background px-2 py-1.5">
+      <div className="min-w-0 flex-1">
+        <span className="font-mono text-xs font-semibold">{roll.short_code}</span>
+        <span className="ml-2 font-mono text-[11px] text-muted-foreground">
+          {roll.impressions_remaining.toLocaleString()} imp left
+        </span>
+      </div>
+      {lowImp && (
+        <>
+          <button
+            type="button"
+            onClick={() => setConfirmOpen(true)}
+            className="hover-elevate active-elevate-2 inline-flex h-7 items-center gap-1 rounded-sm border border-border bg-card px-2 text-[11px] font-medium text-muted-foreground"
+            data-testid={`button-mark-depleted-${roll.short_code}`}
+          >
+            <Trash2 className="h-3 w-3" />
+            Mark depleted
+          </button>
+          <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Mark {roll.short_code} as depleted?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This roll has {roll.impressions_remaining.toLocaleString()} imp left. Marking it
+                  depleted removes it from the kitchen pool. Use this when there's not enough left
+                  to bother running it.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel data-testid="button-deplete-cancel">Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={markDepleted}
+                  data-testid="button-deplete-confirm"
+                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                >
+                  Mark depleted
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </>
+      )}
+    </li>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// FOCUS VIEW: tag rolls for one (flavor, pool) at a time. Unchanged from the
+// previous implementation, just reachable through the new gap card.
 // ---------------------------------------------------------------------------
 function FocusView({
   line,
@@ -607,6 +802,13 @@ function FieldRow({
       <div className="mt-1.5">{children}</div>
     </div>
   );
+}
+
+function fmtDate(s: string): string {
+  // Accepts 'YYYY-MM-DD' or full ISO. Renders as 'Mon Apr 28'.
+  const d = s.length === 10 ? new Date(`${s}T00:00:00`) : new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 function stagingErrorTitle(code: string): string {

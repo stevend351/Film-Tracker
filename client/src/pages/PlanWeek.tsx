@@ -234,9 +234,9 @@ function ExtendPlanSheet({
   }
 
   return (
-    <div className="fixed inset-0 z-40 bg-black/50 flex items-end sm:items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-end sm:items-center justify-center" onClick={onClose}>
       <div
-        className="relative w-full sm:max-w-md max-h-[92vh] overflow-y-auto rounded-t-xl sm:rounded-xl bg-card border border-card-border p-4 pb-32"
+        className="relative w-full sm:max-w-md max-h-[92vh] overflow-y-auto rounded-t-xl sm:rounded-xl bg-card border border-card-border p-4"
         onClick={e => e.stopPropagation()}
       >
         <header className="mb-3">
@@ -298,8 +298,8 @@ function ExtendPlanSheet({
           </Select>
         </div>
 
-        <div className="fixed inset-x-0 bottom-0 z-50 border-t border-border bg-card/95 backdrop-blur-md safe-bottom">
-          <div className="px-4 py-3 flex items-center gap-3 max-w-md mx-auto">
+        <div className="sticky bottom-0 -mx-4 -mb-4 mt-5 border-t border-border bg-card px-4 py-3">
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={onClose}
@@ -315,7 +315,7 @@ function ExtendPlanSheet({
               className="hover-elevate active-elevate-2 inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-primary-border bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50"
               data-testid="button-save-extend"
             >
-              Add {rows.length || ''} {rows.length === 1 ? 'flavor' : 'flavors'}
+              {rows.length === 0 ? 'Pick a flavor first' : `Add ${rows.length} ${rows.length === 1 ? 'flavor' : 'flavors'} & continue to staging`}
             </button>
           </div>
         </div>
