@@ -146,6 +146,54 @@ export function buildPickList(
   return lines;
 }
 
+// What's still needed from the most recent plan, given current inventory.
+// Returns one line per (flavor, pool) the kitchen still needs to pull. Empty
+// if no plan, or if the plan is already fully satisfied. Used by the Transfer
+// page so Brenda knows how many of each roll to grab and tag.
+export interface NeededLine {
+  flavor: Flavor;
+  pool: WarehousePool;
+  shipment_received_at: string;
+  rolls_to_pull: number;          // remaining count for this pool
+  impressions_per_roll: number;
+  order_no: string | null;        // pulled from the shipment
+}
+
+export function computeStillNeeded(state: State): NeededLine[] {
+  const plan = state.plans[0]; // server returns most recent first
+  if (!plan) return [];
+
+  const inv = flavorInventory(state);
+  const lines: NeededLine[] = [];
+
+  for (const row of plan.rows) {
+    const inv_for = inv.find(i => i.flavor.id === row.flavor_id);
+    if (!inv_for) continue;
+
+    const need = Math.ceil(row.batches * row.bars_per_batch * (1 + row.buffer_pct));
+    const pull = Math.max(0, need - inv_for.kitchen_remaining);
+    if (pull <= 0) continue;
+
+    const picks = buildPickList(state, row.flavor_id, pull);
+    for (const p of picks) {
+      const pool = state.pools.find(x => x.id === p.pool_id);
+      const flavor = state.flavors.find(f => f.id === row.flavor_id);
+      const shipment = pool ? state.shipments.find(s => s.id === pool.shipment_id) : null;
+      if (!pool || !flavor) continue;
+      lines.push({
+        flavor,
+        pool,
+        shipment_received_at: p.shipment_received_at,
+        rolls_to_pull: p.rolls_to_pull,
+        impressions_per_roll: p.impressions_per_roll,
+        order_no: shipment?.order_no ?? null,
+      });
+    }
+  }
+
+  return lines;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers (unchanged exports for pages that import slugify / generateShortCode)
 // ---------------------------------------------------------------------------

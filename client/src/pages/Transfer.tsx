@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useLocation } from 'wouter';
-import { CheckCircle2 } from 'lucide-react';
-import { useStore } from '@/store/store';
+import { CheckCircle2, ChevronRight } from 'lucide-react';
+import { useStore, computeStillNeeded } from '@/store/store';
 import type { Roll } from '@/store/types';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
@@ -88,6 +88,18 @@ export default function TransferScreen() {
           Pull a roll, type what is on the supplier label, snap a photo, save.
         </p>
       </header>
+
+      <NeededNowPanel
+        onPick={(line) => {
+          setFlavorId(line.flavor.id);
+          setOrderNo(line.order_no ?? '');
+          setImp(String(line.impressions_per_roll));
+          // Roll # and date are still per-roll, leave blank.
+          setRollNo('');
+          setProdDate('');
+          setPhoto('');
+        }}
+      />
 
       {/* Flavor picker */}
       <section className="rounded-xl border border-card-border bg-card p-3 mb-3">
@@ -277,6 +289,73 @@ export default function TransferScreen() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+// Plan-driven helper. Reads the most recent production plan and shows what
+// still needs to come up to the kitchen, auto-shrinking as rolls get staged
+// (server decrements pools, query refetches). Tap a row to prefill the form.
+function NeededNowPanel({ onPick }: { onPick: (line: ReturnType<typeof computeStillNeeded>[number]) => void }) {
+  const { state } = useStore();
+  const needed = computeStillNeeded(state);
+
+  if (state.plans.length === 0) return null;
+
+  if (needed.length === 0) {
+    return (
+      <section className="rounded-xl border border-card-border bg-card p-3 mb-3">
+        <div className="flex items-center gap-2">
+          <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          <span className="text-sm font-medium">Plan satisfied</span>
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          The kitchen has enough film for this week's plan. Stage extras below if needed.
+        </p>
+      </section>
+    );
+  }
+
+  const totalRolls = needed.reduce((s, l) => s + l.rolls_to_pull, 0);
+
+  return (
+    <section className="rounded-xl border border-card-border bg-card p-3 mb-3">
+      <div className="flex items-baseline justify-between mb-2">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Needed now
+        </p>
+        <span className="text-[11px] font-mono text-muted-foreground">
+          {totalRolls} {totalRolls === 1 ? 'roll' : 'rolls'} to grab
+        </span>
+      </div>
+      <div className="space-y-1.5">
+        {needed.map((line, i) => (
+          <button
+            key={`${line.pool.id}-${i}`}
+            type="button"
+            onClick={() => onPick(line)}
+            className="hover-elevate active-elevate-2 flex w-full items-center justify-between rounded-md border border-border bg-background px-3 py-2.5 text-left"
+            data-testid={`button-needed-${line.flavor.slug}`}
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline gap-2">
+                <span className="text-sm font-semibold">{line.flavor.name}</span>
+                <span className="font-mono text-[10px] text-muted-foreground">{line.flavor.prefix}</span>
+              </div>
+              <div className="mt-0.5 flex items-center gap-2 text-[11px] font-mono text-muted-foreground truncate">
+                <span className="font-semibold text-foreground">
+                  {line.rolls_to_pull} × {line.impressions_per_roll.toLocaleString()} imp
+                </span>
+                {line.order_no && <span className="truncate">· {line.order_no}</span>}
+              </div>
+            </div>
+            <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0 ml-2" />
+          </button>
+        ))}
+      </div>
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        Tap a row to prefill the form. Counts shrink as you stage.
+      </p>
+    </section>
   );
 }
 
