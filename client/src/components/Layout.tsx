@@ -1,6 +1,6 @@
 import { type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
-import { Package, Calendar, ArrowRightLeft, Boxes, Camera, BarChart3 } from 'lucide-react';
+import { Package, Calendar, ArrowRightLeft, Boxes, Camera, BarChart3, ClipboardList } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface NavItem {
@@ -9,19 +9,25 @@ interface NavItem {
   icon: typeof Package;
 }
 
-// Bottom nav (phone): 5 tabs only — Reports lives in the desktop top bar.
+// Bottom nav (phone): the 5 things kitchen ops do. Log is the primary action.
+// Plan and Reports live in the desktop top bar.
 const NAV: NavItem[] = [
   { href: '/',         label: 'Inventory', icon: Boxes },
-  { href: '/plan',     label: 'Plan',      icon: Calendar },
+  { href: '/log',      label: 'Log',       icon: ClipboardList },
   { href: '/transfer', label: 'Transfer',  icon: ArrowRightLeft },
   { href: '/receive',  label: 'Receive',   icon: Package },
   { href: '/photos',   label: 'Photos',    icon: Camera },
 ];
 
-// Desktop top bar gets every section plus Reports.
+// Desktop top bar adds Plan + Reports.
 const DESKTOP_NAV: NavItem[] = [
-  ...NAV,
-  { href: '/reports', label: 'Reports', icon: BarChart3 },
+  { href: '/',         label: 'Inventory', icon: Boxes },
+  { href: '/log',      label: 'Log',       icon: ClipboardList },
+  { href: '/plan',     label: 'Plan',      icon: Calendar },
+  { href: '/transfer', label: 'Transfer',  icon: ArrowRightLeft },
+  { href: '/receive',  label: 'Receive',   icon: Package },
+  { href: '/photos',   label: 'Photos',    icon: Camera },
+  { href: '/reports',  label: 'Reports',   icon: BarChart3 },
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -91,7 +97,11 @@ function BottomNav() {
     >
       <ul className="grid grid-cols-5">
         {NAV.map(item => {
-          const active = location === item.href || (item.href !== '/' && location.startsWith(item.href));
+          // For mobile bottom nav: '/log' tab should also light up on '/log/:rollId'.
+          const active =
+            location === item.href ||
+            (item.href !== '/' && location.startsWith(item.href + '/')) ||
+            (item.href !== '/' && location === item.href);
           const Icon = item.icon;
           return (
             <li key={item.href}>

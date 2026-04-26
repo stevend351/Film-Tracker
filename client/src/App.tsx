@@ -10,6 +10,7 @@ import { AuthProvider, useAuth } from '@/store/auth';
 import { Layout } from '@/components/Layout';
 import Inventory from '@/pages/Inventory';
 import LogUsage from '@/pages/LogUsage';
+import LogPicker from '@/pages/LogPicker';
 import Receive from '@/pages/Receive';
 import PlanWeek from '@/pages/PlanWeek';
 import Transfer from '@/pages/Transfer';
@@ -22,6 +23,7 @@ function AppRouter() {
   return (
     <Switch>
       <Route path="/" component={Inventory} />
+      <Route path="/log" component={LogPicker} />
       <Route path="/log/:rollId" component={LogUsage} />
       <Route path="/receive" component={Receive} />
       <Route path="/plan" component={PlanWeek} />

@@ -291,7 +291,7 @@ export default function PhotosScreen() {
         }}
       />
 
-      {/* Kind filter (Staged vs Usage) */}
+      {/* Kind filter (Staged vs In use) */}
       <div className="mb-2 flex gap-2">
         {(['ALL', 'STAGED', 'USAGE'] as KindFilter[]).map(k => (
           <button
@@ -306,7 +306,7 @@ export default function PhotosScreen() {
             )}
             data-testid={`kind-${k.toLowerCase()}`}
           >
-            {k === 'ALL' ? 'All' : k === 'STAGED' ? 'Staged' : 'Usage'}
+            {k === 'ALL' ? 'All' : k === 'STAGED' ? 'Staged' : 'In use'}
           </button>
         ))}
         <span className="ml-auto self-center text-xs text-muted-foreground">
@@ -371,7 +371,7 @@ export default function PhotosScreen() {
                             : 'bg-violet-500/90 text-white',
                         )}
                       >
-                        {p.kind === 'STAGED' ? 'Stg' : 'Use'}
+                        {p.kind === 'STAGED' ? 'Stg' : 'In use'}
                       </span>
                     )}
                     <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-1.5">
@@ -443,7 +443,7 @@ export default function PhotosScreen() {
                     viewing.kind === 'STAGED' ? 'bg-amber-500 text-white' : 'bg-violet-500 text-white',
                   )}
                 >
-                  {viewing.kind === 'STAGED' ? 'Staged' : 'Usage'}
+                  {viewing.kind === 'STAGED' ? 'Staged' : 'In use'}
                 </span>
               )}
               {viewing.roll_id && rollById.get(viewing.roll_id) && (
