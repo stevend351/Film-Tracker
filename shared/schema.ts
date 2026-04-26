@@ -69,6 +69,10 @@ export const rolls = pgTable("rolls", {
   override_extra_wrap: boolean("override_extra_wrap").notNull().default(false),
   tagged_at: timestamp("tagged_at", { withTimezone: true }).notNull(),
   tagged_by: text("tagged_by").references(() => users.id, { onDelete: "restrict" }),
+  // When the roll was pulled warehouse to kitchen. Same instant as tagged_at
+  // for now, but a separate column so we can distinguish staging movements
+  // from other lifecycle events later.
+  staged_at: timestamp("staged_at", { withTimezone: true }),
 });
 
 // ---------------------------------------------------------------------------
@@ -106,6 +110,13 @@ export const kitchen_photos = pgTable("kitchen_photos", {
   flavor_ids: jsonb("flavor_ids").$type<string[] | null>(),
   taken_by: text("taken_by").references(() => users.id, { onDelete: "restrict" }),
   taken_at: timestamp("taken_at", { withTimezone: true }).notNull(),
+  // STAGED: photo of ID written on roll, taken when Brenda pulls warehouse to
+  // kitchen. Used as the visual queue for what is on hand and to match physical
+  // tape when picking a roll. USAGE: photo of re-taped ID after a production
+  // run, paired with a usage_event for audit trail.
+  kind: text("kind").notNull().default("USAGE"),
+  roll_id: text("roll_id"),
+  usage_event_id: text("usage_event_id"),
 });
 
 // ---------------------------------------------------------------------------
@@ -133,6 +144,7 @@ export const insertWarehousePoolSchema = createInsertSchema(warehouse_pools);
 
 export const insertRollSchema = createInsertSchema(rolls).extend({
   tagged_at: z.coerce.date(),
+  staged_at: z.coerce.date().nullable().optional(),
 });
 
 export const insertUsageEventSchema = createInsertSchema(usage_events).omit({
@@ -153,6 +165,9 @@ export const insertProductionPlanSchema = createInsertSchema(production_plans).o
 export const insertKitchenPhotoSchema = createInsertSchema(kitchen_photos).extend({
   flavor_ids: z.array(z.string()).nullable().optional(),
   taken_at: z.coerce.date(),
+  kind: z.enum(["STAGED", "USAGE"]).default("USAGE"),
+  roll_id: z.string().nullable().optional(),
+  usage_event_id: z.string().nullable().optional(),
 });
 
 // ---------------------------------------------------------------------------

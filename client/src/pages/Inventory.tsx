@@ -1,11 +1,39 @@
 import { useMemo, useState } from 'react';
 import { useLocation } from 'wouter';
-import { ChevronDown, Search } from 'lucide-react';
+import { ChevronDown, Search, ImageOff } from 'lucide-react';
 import { useStore, flavorInventory, type FlavorInventory } from '@/store/store';
 import type { RollWithUsage } from '@/store/store';
+import type { KitchenPhoto } from '@/store/types';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
+
+// Latest photo per roll, preferring USAGE > STAGED.
+function latestPhotoByRoll(photos: KitchenPhoto[]): Map<string, KitchenPhoto> {
+  const m = new Map<string, KitchenPhoto>();
+  // Sort newest first so the first match per roll wins.
+  const sorted = [...photos].sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1));
+  for (const p of sorted) {
+    if (!p.roll_id) continue;
+    if (!m.has(p.roll_id)) m.set(p.roll_id, p);
+  }
+  return m;
+}
+
+function stagedAgeLabel(iso?: string | null): string | null {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 0) return 'just now';
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const days = Math.floor(hr / 24);
+  if (days < 7) return `${days}d ago`;
+  const wks = Math.floor(days / 7);
+  return `${wks}w ago`;
+}
 
 export default function InventoryScreen() {
   const { state } = useStore();
@@ -13,6 +41,7 @@ export default function InventoryScreen() {
   const [search, setSearch] = useState('');
 
   const inv = useMemo(() => flavorInventory(state), [state]);
+  const photoByRoll = useMemo(() => latestPhotoByRoll(state.photos), [state.photos]);
 
   const q = search.trim().toLowerCase();
   const filtered = q
@@ -67,6 +96,7 @@ export default function InventoryScreen() {
               <KitchenFlavorCard
                 key={f.flavor.id}
                 inv={f}
+                photoByRoll={photoByRoll}
                 onLog={(roll) => setLocation(`/log/${roll.id}`)}
               />
             ))}
@@ -128,7 +158,20 @@ function Section({
   );
 }
 
-function KitchenFlavorCard({ inv, onLog }: { inv: FlavorInventory; onLog: (r: RollWithUsage) => void }) {
+function KitchenFlavorCard({
+  inv, photoByRoll, onLog,
+}: {
+  inv: FlavorInventory;
+  photoByRoll: Map<string, KitchenPhoto>;
+  onLog: (r: RollWithUsage) => void;
+}) {
+  // Use up partials first: sort by remaining ASC, then by tagged_at DESC as tiebreak.
+  const sorted = [...inv.kitchen_rolls].sort((a, b) => {
+    if (a.impressions_remaining !== b.impressions_remaining) {
+      return a.impressions_remaining - b.impressions_remaining;
+    }
+    return a.tagged_at < b.tagged_at ? 1 : -1;
+  });
   return (
     <div className="rounded-lg border border-border bg-background/40 p-3">
       <div className="mb-2 flex items-center justify-between">
@@ -138,15 +181,44 @@ function KitchenFlavorCard({ inv, onLog }: { inv: FlavorInventory; onLog: (r: Ro
         </span>
       </div>
       <div className="space-y-2">
-        {inv.kitchen_rolls.map(r => <RollRow key={r.id} roll={r} onLog={() => onLog(r)} />)}
+        {sorted.map(r => (
+          <RollRow
+            key={r.id}
+            roll={r}
+            photo={photoByRoll.get(r.id)}
+            onLog={() => onLog(r)}
+          />
+        ))}
       </div>
     </div>
   );
 }
 
-function RollRow({ roll, onLog }: { roll: RollWithUsage; onLog: () => void }) {
+function RollRow({
+  roll, photo, onLog,
+}: {
+  roll: RollWithUsage;
+  photo?: KitchenPhoto;
+  onLog: () => void;
+}) {
+  const age = stagedAgeLabel(roll.staged_at ?? roll.tagged_at);
   return (
     <div className="flex items-center gap-3 rounded-md p-2 hover-elevate active-elevate-2">
+      {/* Thumbnail */}
+      <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md border border-border bg-muted/40">
+        {photo ? (
+          <img
+            src={photo.data_url}
+            alt=""
+            className="h-full w-full object-cover"
+            data-testid={`thumb-roll-${roll.short_code}`}
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-muted-foreground/60">
+            <ImageOff className="h-4 w-4" />
+          </div>
+        )}
+      </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="font-mono text-sm font-medium" data-testid={`text-rollcode-${roll.short_code}`}>
@@ -155,6 +227,11 @@ function RollRow({ roll, onLog }: { roll: RollWithUsage; onLog: () => void }) {
           <StatusPill status={roll.status} />
           {roll.override_extra_wrap && (
             <span className="text-[10px] font-medium uppercase text-amber-500">override</span>
+          )}
+          {age && (
+            <span className="text-[10px] text-muted-foreground/80" data-testid={`text-age-${roll.short_code}`}>
+              {age}
+            </span>
           )}
         </div>
         <div className="mt-1.5 flex items-center gap-2">

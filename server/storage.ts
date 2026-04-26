@@ -185,15 +185,39 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createUsageEvent(event: InsertUsageEvent): Promise<UsageEvent> {
-    const ins = await db
-      .insert(usage_events)
-      .values(event)
-      .onConflictDoNothing({ target: usage_events.id })
-      .returning();
-    if (ins[0]) return ins[0];
-    const existing = await db.select().from(usage_events).where(eq(usage_events.id, event.id)).limit(1);
-    if (!existing[0]) throw new Error(`createUsageEvent: row missing: ${event.id}`);
-    return existing[0];
+    // Server is the source of truth for roll status. Inserting a usage event
+    // also transitions the roll: STAGED -> IN_USE on first usage, anything
+    // -> DEPLETED when total used >= capacity. Done in one transaction so
+    // an offline retry cannot land the event without the status transition
+    // (or vice versa).
+    return db.transaction(async (tx) => {
+      const ins = await tx
+        .insert(usage_events)
+        .values(event)
+        .onConflictDoNothing({ target: usage_events.id })
+        .returning();
+      const wasNew = !!ins[0];
+      const row = ins[0]
+        ?? (await tx.select().from(usage_events).where(eq(usage_events.id, event.id)).limit(1))[0];
+      if (!row) throw new Error(`createUsageEvent: row missing: ${event.id}`);
+      if (!wasNew) return row; // idempotent retry, status already settled
+
+      // Transition the roll based on new total.
+      const rollRow = (await tx.select().from(rolls).where(eq(rolls.id, event.roll_id)).limit(1))[0];
+      if (!rollRow) return row; // shouldn't happen but stay defensive
+      const totalRow = await tx
+        .select({ s: dsql<string>`COALESCE(SUM(${usage_events.impressions_used}), 0)` })
+        .from(usage_events)
+        .where(eq(usage_events.roll_id, event.roll_id));
+      const total = Number(totalRow[0].s);
+      let newStatus: string | null = null;
+      if (total >= rollRow.impressions_per_roll) newStatus = "DEPLETED";
+      else if (rollRow.status === "STAGED") newStatus = "IN_USE";
+      if (newStatus && newStatus !== rollRow.status) {
+        await tx.update(rolls).set({ status: newStatus }).where(eq(rolls.id, event.roll_id));
+      }
+      return row;
+    });
   }
 
   // ---- plans ------------------------------------------------------------

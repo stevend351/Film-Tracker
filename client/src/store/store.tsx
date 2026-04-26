@@ -194,10 +194,25 @@ export interface ReceiveLine {
 
 export interface StoreActions {
   receiveShipment: (orderNo: string, lines: ReceiveLine[]) => Shipment;
-  tagRollFromPool: (pool_id: string) => Roll;
-  logUsage: (roll_id: string, impressions_used: number, notes?: string, override?: boolean) => { ok: boolean; error?: string };
+  // Brenda: pull a roll warehouse -> kitchen STAGED, with required photo of
+  // the ID written on the roll. The caller passes the short_code that was
+  // shown to Brenda so the persisted record matches what she wrote on the
+  // physical tape. If undefined, we generate one fresh.
+  stageRoll: (pool_id: string, photo_data_url: string, short_code?: string) => Roll;
+  // Steven: log impressions used on the machine. Photo of re-taped ID is
+  // required. Server promotes STAGED -> IN_USE on first usage, anything ->
+  // DEPLETED at zero remaining.
+  logUsage: (
+    roll_id: string,
+    impressions_used: number,
+    photo_data_url: string,
+    notes?: string,
+    override?: boolean,
+  ) => { ok: boolean; error?: string };
   setOverride: (roll_id: string, on: boolean) => void;
   savePlan: (plan: ProductionPlan) => void;
+  // Free-form photo entry (for the legacy Photos page). New flows use
+  // stageRoll / logUsage which embed the photo automatically.
   addPhoto: (data_url: string, opts: { location: Location; caption?: string; flavor_ids?: string[] }) => void;
   reset: () => void;
 }
@@ -319,14 +334,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return shipment;
     },
 
-    tagRollFromPool(pool_id) {
+    stageRoll(pool_id, photo_data_url, short_code) {
       const pool = state.pools.find(p => p.id === pool_id);
       if (!pool) throw new Error('Pool not found');
       if (pool.rolls_received - pool.rolls_tagged_out <= 0) throw new Error('Pool exhausted');
       const flavor = state.flavors.find(f => f.id === pool.flavor_id);
       if (!flavor) throw new Error('Flavor not found');
       const existing = new Set(state.rolls.map(r => r.short_code));
-      const short = generateShortCode(flavor.prefix, existing);
+      const short = short_code ?? generateShortCode(flavor.prefix, existing);
+      const now = new Date().toISOString();
       const roll: Roll = {
         id: uuid('r'),
         short_code: short,
@@ -336,16 +352,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         status: 'STAGED',
         location: 'KITCHEN',
         override_extra_wrap: false,
-        tagged_at: new Date().toISOString(),
+        tagged_at: now,
+        staged_at: now,
       };
       rollMut.mutate(roll);
+      // Tie the staging photo to the roll. Server stamps taken_by from session.
+      const photo: KitchenPhoto = {
+        id: uuid('ph'),
+        data_url: photo_data_url,
+        caption: short,
+        location: 'KITCHEN',
+        flavor_ids: [pool.flavor_id],
+        taken_at: now,
+        kind: 'STAGED',
+        roll_id: roll.id,
+        usage_event_id: null,
+      };
+      photoMut.mutate(photo);
       return roll;
     },
 
-    logUsage(roll_id, impressions_used, notes, override) {
+    logUsage(roll_id, impressions_used, photo_data_url, notes, override) {
       const roll = state.rolls.find(r => r.id === roll_id);
       if (!roll) return { ok: false, error: 'Roll not found' };
       if (impressions_used <= 0) return { ok: false, error: 'Must be a positive number' };
+      if (!photo_data_url) return { ok: false, error: 'Photo of re-taped ID is required' };
 
       const used = (rollUsageMap(state).get(roll_id) ?? 0) + impressions_used;
       const allow = override === true || roll.override_extra_wrap;
@@ -356,27 +387,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         };
       }
 
+      const now = new Date().toISOString();
       const event: UsageEvent = {
         id: uuid('u'),
         roll_id,
         impressions_used,
         notes: notes ?? null,
-        created_at: new Date().toISOString(),
+        created_at: now,
       };
 
-      // Roll status transitions are still derived locally for snappy UI.
-      // We post the patch separately so the server stays the source of truth.
-      let new_status: Roll['status'] | undefined;
-      if (used >= roll.impressions_per_roll) new_status = 'DEPLETED';
-      else if (roll.status === 'STAGED') new_status = 'IN_USE';
-
+      // Override is a separate roll attribute; only patch when toggling on.
+      // Status transitions (STAGED -> IN_USE, anything -> DEPLETED) are now
+      // handled server-side inside the usage_event transaction. No more
+      // racing PATCH calls from the client.
       if (override === true && !roll.override_extra_wrap) {
         rollPatchMut.mutate({ id: roll_id, patch: { override_extra_wrap: true } });
       }
-      if (new_status && new_status !== roll.status) {
-        rollPatchMut.mutate({ id: roll_id, patch: { status: new_status } });
-      }
       usageMut.mutate(event);
+
+      // Pair a USAGE photo with the event for the audit trail.
+      const photo: KitchenPhoto = {
+        id: uuid('ph'),
+        data_url: photo_data_url,
+        caption: roll.short_code,
+        location: 'KITCHEN',
+        flavor_ids: [roll.flavor_id],
+        taken_at: now,
+        kind: 'USAGE',
+        roll_id,
+        usage_event_id: event.id,
+      };
+      photoMut.mutate(photo);
 
       return { ok: true };
     },

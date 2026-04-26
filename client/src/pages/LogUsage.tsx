@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
+import { PhotoCapture } from '@/components/PhotoCapture';
 
 const QUICK_VALUES = [100, 500, 1000];
 
@@ -26,6 +27,7 @@ export default function LogUsageScreen() {
   const [amount, setAmount] = useState<number>(0);
   const [notes, setNotes] = useState('');
   const [override, setOverride] = useState(false);
+  const [photo, setPhoto] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => { if (enriched) setOverride(enriched.override_extra_wrap); }, [enriched?.id]);
@@ -57,7 +59,8 @@ export default function LogUsageScreen() {
 
   function submit() {
     if (amount <= 0) { setError('Enter a positive number.'); return; }
-    const result = actions.logUsage(enriched!.id, amount, notes || undefined, override);
+    if (!photo) { setError('Photo of re-taped ID is required.'); return; }
+    const result = actions.logUsage(enriched!.id, amount, photo, notes || undefined, override);
     if (!result.ok) { setError(result.error ?? 'Could not log usage.'); return; }
     toast({
       title: willDeplete ? 'Roll depleted' : 'Usage logged',
@@ -204,6 +207,23 @@ export default function LogUsageScreen() {
       )}
 
       <div className="mt-5">
+        <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Photo of re-taped ID
+        </Label>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Tape {enriched.short_code} back to the roll, then snap a photo.
+        </p>
+        <div className="mt-2">
+          <PhotoCapture
+            label="Take usage photo"
+            value={photo}
+            onCapture={setPhoto}
+            testIdPrefix="usage-photo"
+          />
+        </div>
+      </div>
+
+      <div className="mt-5">
         <Label htmlFor="notes-input" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Notes (optional)
         </Label>
@@ -227,7 +247,7 @@ export default function LogUsageScreen() {
         <button
           type="button"
           onClick={submit}
-          disabled={amount <= 0 || (overshoot && !override)}
+          disabled={amount <= 0 || !photo || (overshoot && !override)}
           className="hover-elevate active-elevate-2 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md border border-primary-border bg-primary font-semibold text-primary-foreground disabled:opacity-50 disabled:hover:bg-primary"
           data-testid="button-submit"
         >

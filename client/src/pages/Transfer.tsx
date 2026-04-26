@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useLocation } from 'wouter';
 import { Tag, CheckCircle2, ArrowRight } from 'lucide-react';
-import { useStore } from '@/store/store';
+import { useStore, generateShortCode } from '@/store/store';
 import type { PickListLine, Roll } from '@/store/types';
 import { useToast } from '@/hooks/use-toast';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { PhotoCapture } from '@/components/PhotoCapture';
 
 interface PickProgress extends PickListLine {
   tagged_count: number;
@@ -21,6 +22,12 @@ export default function TransferScreen() {
     return (pending ?? []).map(p => ({ ...p, tagged_count: 0 }));
   });
   const [tagged, setTagged] = useState<Roll[]>([]);
+  // The roll the user just generated an ID for. They write the ID on the
+  // roll, then snap a photo to confirm. We don't actually persist the roll
+  // until the photo is captured -- otherwise an offline retry could land a
+  // staged roll with no photo.
+  const [pendingPool, setPendingPool] = useState<{ pool_id: string; short_code: string; flavor_name: string; imp: number } | null>(null);
+  const [photo, setPhoto] = useState<string>('');
   const [activeRoll, setActiveRoll] = useState<Roll | null>(null);
 
   // Group by flavor for display
@@ -43,17 +50,37 @@ export default function TransferScreen() {
   const totalTagged = picks.reduce((s, p) => s + p.tagged_count, 0);
   const remaining = totalToTag - totalTagged;
 
+  // Step 1: open the modal with the next short_code for this pool. We
+  // pre-generate the code so Brenda can write it on the roll, then take
+  // the photo. The roll itself is created on confirmStage().
   function tagFromPool(pool_id: string) {
+    const pool = state.pools.find(p => p.id === pool_id);
+    if (!pool) return toast({ title: 'Pool not found', variant: 'destructive' });
+    const flavor = state.flavors.find(f => f.id === pool.flavor_id);
+    if (!flavor) return toast({ title: 'Flavor not found', variant: 'destructive' });
+    const existing = new Set(state.rolls.map(r => r.short_code));
+    // Generate the code now so Brenda writes what we will persist.
+    const short = generateShortCode(flavor.prefix, existing);
+    setPendingPool({ pool_id, short_code: short, flavor_name: flavor.name, imp: pool.impressions_per_roll });
+    setPhoto('');
+  }
+
+  // Step 2: photo captured, persist the roll + photo together.
+  function confirmStage() {
+    if (!pendingPool || !photo) return;
     try {
-      const roll = actions.tagRollFromPool(pool_id);
+      // Pass the pre-shown short_code so the persisted row matches the tape.
+      const roll = actions.stageRoll(pendingPool.pool_id, photo, pendingPool.short_code);
       setActiveRoll(roll);
       setTagged(prev => [roll, ...prev]);
-      setPicks(prev => prev.map(p => p.pool_id === pool_id
+      setPicks(prev => prev.map(p => p.pool_id === pendingPool.pool_id
         ? { ...p, tagged_count: p.tagged_count + 1 }
         : p,
       ));
+      setPendingPool(null);
+      setPhoto('');
     } catch (e: any) {
-      toast({ title: 'Could not tag roll', description: e.message, variant: 'destructive' });
+      toast({ title: 'Could not stage roll', description: e.message, variant: 'destructive' });
     }
   }
 
@@ -181,36 +208,80 @@ export default function TransferScreen() {
         </div>
       )}
 
-      {/* Big short-code modal */}
-      <Dialog open={!!activeRoll} onOpenChange={(open) => !open && done()}>
+      {/* Stage-a-roll modal: write code, take photo, save. */}
+      <Dialog open={!!pendingPool} onOpenChange={(open) => !open && setPendingPool(null)}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="text-center text-sm font-medium uppercase tracking-wider text-muted-foreground">
               Write this on the roll core
             </DialogTitle>
             <DialogDescription className="sr-only">
-              The short code to write on the new roll core.
+              The short code to write on the new roll core, then snap a photo.
+            </DialogDescription>
+          </DialogHeader>
+          {pendingPool && (
+            <div className="text-center py-4">
+              <p className="text-sm text-muted-foreground">{pendingPool.flavor_name}</p>
+              <p className="mt-2 font-mono font-bold text-5xl tracking-tight" data-testid="text-shortcode">
+                {pendingPool.short_code}
+              </p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {pendingPool.imp.toLocaleString()} impressions
+              </p>
+            </div>
+          )}
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground text-center">
+              Snap a photo of the ID written on the roll.
+            </p>
+            <PhotoCapture
+              label="Take staging photo"
+              value={photo}
+              onCapture={setPhoto}
+              testIdPrefix="stage-photo"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={confirmStage}
+            disabled={!photo}
+            className="hover-elevate active-elevate-2 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md border border-primary-border bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50"
+            data-testid="button-confirm-stage"
+          >
+            <CheckCircle2 className="h-4 w-4" />
+            Save staged roll
+          </button>
+        </DialogContent>
+      </Dialog>
+
+      {/* Brief confirmation after staging — auto-dismisses on tap. */}
+      <Dialog open={!!activeRoll} onOpenChange={(open) => !open && done()}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-center text-sm font-medium uppercase tracking-wider text-muted-foreground">
+              Staged at kitchen
+            </DialogTitle>
+            <DialogDescription className="sr-only">
+              Roll has been staged at the kitchen.
             </DialogDescription>
           </DialogHeader>
           {activeRoll && (
-            <div className="text-center py-6">
-              <p className="text-sm text-muted-foreground">{state.flavors.find(f => f.id === activeRoll.flavor_id)?.name}</p>
-              <p className="mt-3 font-mono font-bold text-5xl tracking-tight" data-testid="text-shortcode">
+            <div className="text-center py-4">
+              <p className="font-mono font-bold text-3xl tracking-tight">
                 {activeRoll.short_code}
               </p>
-              <p className="mt-3 text-xs text-muted-foreground">
-                {activeRoll.impressions_per_roll.toLocaleString()} impressions
+              <p className="mt-2 text-sm text-emerald-600 dark:text-emerald-400">
+                Saved
               </p>
             </div>
           )}
           <button
             type="button"
             onClick={done}
-            className="hover-elevate active-elevate-2 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md border border-primary-border bg-primary text-sm font-semibold text-primary-foreground"
+            className="hover-elevate active-elevate-2 inline-flex h-11 w-full items-center justify-center rounded-md border border-primary-border bg-primary text-sm font-semibold text-primary-foreground"
             data-testid="button-modal-done"
           >
-            <CheckCircle2 className="h-4 w-4" />
-            Done — taped
+            Continue
           </button>
         </DialogContent>
       </Dialog>

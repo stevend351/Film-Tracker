@@ -1,7 +1,7 @@
 import { useRef, useState, useMemo } from 'react';
 import { Camera, X, MapPin, Tag } from 'lucide-react';
 import { useStore } from '@/store/store';
-import type { KitchenPhoto, Location } from '@/store/types';
+import type { KitchenPhoto, Location, PhotoKind } from '@/store/types';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
@@ -33,7 +33,8 @@ function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
-type FilterMode = 'ALL' | Location;
+type LocationFilter = 'ALL' | Location;
+type KindFilter = 'ALL' | PhotoKind;
 
 interface CaptureDraft {
   data_url: string;
@@ -47,7 +48,8 @@ export default function PhotosScreen() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState<CaptureDraft | null>(null);
   const [viewing, setViewing] = useState<KitchenPhoto | null>(null);
-  const [filter, setFilter] = useState<FilterMode>('ALL');
+  const [filter, setFilter] = useState<LocationFilter>('ALL');
+  const [kindFilter, setKindFilter] = useState<KindFilter>('ALL');
 
   // Find this week's plan (if any) so we can auto-suggest the caption + flavor tags.
   const activePlan = useMemo(() => {
@@ -106,7 +108,11 @@ export default function PhotosScreen() {
 
   // Filtered + grouped photos for library view.
   const grouped = useMemo(() => {
-    const filtered = state.photos.filter(p => filter === 'ALL' ? true : p.location === filter);
+    const filtered = state.photos.filter(p => {
+      if (filter !== 'ALL' && p.location !== filter) return false;
+      if (kindFilter !== 'ALL' && (p.kind ?? null) !== kindFilter) return false;
+      return true;
+    });
     const map = new Map<string, KitchenPhoto[]>();
     for (const p of filtered) {
       const k = dayKey(p.taken_at);
@@ -120,7 +126,22 @@ export default function PhotosScreen() {
         day,
         items: items.sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1)),
       }));
-  }, [state.photos, filter]);
+  }, [state.photos, filter, kindFilter]);
+
+  const filteredCount = useMemo(
+    () => state.photos.filter(p => {
+      if (filter !== 'ALL' && p.location !== filter) return false;
+      if (kindFilter !== 'ALL' && (p.kind ?? null) !== kindFilter) return false;
+      return true;
+    }).length,
+    [state.photos, filter, kindFilter],
+  );
+
+  const rollById = useMemo(() => {
+    const m = new Map<string, { short_code: string }>();
+    for (const r of state.rolls) m.set(r.id, { short_code: r.short_code });
+    return m;
+  }, [state.rolls]);
 
   const flavorNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -270,27 +291,47 @@ export default function PhotosScreen() {
         }}
       />
 
-      {/* Filter chips */}
+      {/* Kind filter (Staged vs Usage) */}
+      <div className="mb-2 flex gap-2">
+        {(['ALL', 'STAGED', 'USAGE'] as KindFilter[]).map(k => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setKindFilter(k)}
+            className={cn(
+              'hover-elevate active-elevate-2 inline-flex h-9 items-center justify-center rounded-full border px-4 text-xs font-medium',
+              kindFilter === k
+                ? 'border-primary-border bg-primary text-primary-foreground'
+                : 'border-border bg-background text-muted-foreground',
+            )}
+            data-testid={`kind-${k.toLowerCase()}`}
+          >
+            {k === 'ALL' ? 'All' : k === 'STAGED' ? 'Staged' : 'Usage'}
+          </button>
+        ))}
+        <span className="ml-auto self-center text-xs text-muted-foreground">
+          {filteredCount} photos
+        </span>
+      </div>
+
+      {/* Location filter */}
       <div className="mb-4 flex gap-2">
-        {(['ALL', 'KITCHEN', 'WAREHOUSE'] as FilterMode[]).map(m => (
+        {(['ALL', 'KITCHEN', 'WAREHOUSE'] as LocationFilter[]).map(m => (
           <button
             key={m}
             type="button"
             onClick={() => setFilter(m)}
             className={cn(
-              'hover-elevate active-elevate-2 inline-flex h-9 items-center justify-center rounded-full border px-4 text-xs font-medium',
+              'hover-elevate active-elevate-2 inline-flex h-9 items-center justify-center rounded-full border px-3 text-xs font-medium',
               filter === m
                 ? 'border-primary-border bg-primary text-primary-foreground'
                 : 'border-border bg-background text-muted-foreground',
             )}
             data-testid={`filter-${m.toLowerCase()}`}
           >
-            {m === 'ALL' ? 'All' : m === 'KITCHEN' ? 'Kitchen' : 'Warehouse'}
+            {m === 'ALL' ? 'All locations' : m === 'KITCHEN' ? 'Kitchen' : 'Warehouse'}
           </button>
         ))}
-        <span className="ml-auto self-center text-xs text-muted-foreground">
-          {state.photos.filter(p => filter === 'ALL' || p.location === filter).length} photos
-        </span>
       </div>
 
       {grouped.length === 0 ? (
@@ -321,6 +362,18 @@ export default function PhotosScreen() {
                     data-testid={`photo-${p.id}`}
                   >
                     <img src={p.data_url} alt={p.caption ?? ''} className="h-full w-full object-cover" />
+                    {p.kind && (
+                      <span
+                        className={cn(
+                          'absolute top-1.5 left-1.5 inline-flex h-4 items-center rounded-full px-1.5 text-[9px] font-bold uppercase',
+                          p.kind === 'STAGED'
+                            ? 'bg-amber-500/90 text-white'
+                            : 'bg-violet-500/90 text-white',
+                        )}
+                      >
+                        {p.kind === 'STAGED' ? 'Stg' : 'Use'}
+                      </span>
+                    )}
                     <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-1.5">
                       <div className="flex items-center justify-between gap-1">
                         <span className="text-[10px] font-medium text-white">
@@ -372,7 +425,7 @@ export default function PhotosScreen() {
             className="border-t border-white/10 bg-black/80 px-5 py-4 text-white"
             onClick={e => e.stopPropagation()}
           >
-            <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-white/60">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wider text-white/60">
               <span>{new Date(viewing.taken_at).toLocaleString()}</span>
               <span>·</span>
               <span
@@ -383,6 +436,21 @@ export default function PhotosScreen() {
               >
                 {viewing.location === 'KITCHEN' ? 'Kitchen' : 'Warehouse'}
               </span>
+              {viewing.kind && (
+                <span
+                  className={cn(
+                    'inline-flex h-5 items-center rounded-full px-2 font-bold',
+                    viewing.kind === 'STAGED' ? 'bg-amber-500 text-white' : 'bg-violet-500 text-white',
+                  )}
+                >
+                  {viewing.kind === 'STAGED' ? 'Staged' : 'Usage'}
+                </span>
+              )}
+              {viewing.roll_id && rollById.get(viewing.roll_id) && (
+                <span className="font-mono normal-case text-white/80">
+                  {rollById.get(viewing.roll_id)!.short_code}
+                </span>
+              )}
             </div>
             {viewing.caption && (
               <p className="mt-2 text-sm font-medium">{viewing.caption}</p>

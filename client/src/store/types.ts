@@ -5,6 +5,7 @@
 
 export type RollStatus = 'STAGED' | 'IN_USE' | 'DEPLETED' | 'OFFLINE';
 export type Location = 'WAREHOUSE' | 'KITCHEN';
+export type PhotoKind = 'STAGED' | 'USAGE';
 
 export interface Flavor {
   id: string;
@@ -46,6 +47,7 @@ export interface Roll {
   override_extra_wrap: boolean;
   tagged_at: string;
   tagged_by?: string | null;
+  staged_at?: string | null;     // when pulled to kitchen
 }
 
 export interface UsageEvent {
@@ -82,12 +84,17 @@ export interface PickListLine {
 
 export interface KitchenPhoto {
   id: string;
-  data_url: string;              // 256px JPEG thumbnail (full-res lives on phone)
+  data_url: string;              // ~200KB JPEG, longest edge 1600px
   caption?: string | null;
   location: Location;
   flavor_ids?: string[] | null;
   taken_by?: string | null;
   taken_at: string;
+  // STAGED: photo of ID written on roll when pulled to kitchen.
+  // USAGE: photo of re-taped ID after a production run, paired with usage_event.
+  kind?: PhotoKind;
+  roll_id?: string | null;
+  usage_event_id?: string | null;
 }
 
 export interface SessionUser {
