@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react';
-import { BarChart3, AlertTriangle, ChevronDown, ChevronRight, ShieldCheck, Package } from 'lucide-react';
+import { BarChart3, AlertTriangle, ChevronDown, ChevronRight, ShieldCheck, Package, Trash2 } from 'lucide-react';
 import { useStore } from '@/store/store';
+import { useAuth } from '@/store/auth';
+import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
@@ -408,7 +410,61 @@ export default function ReportsScreen() {
       </p>
 
       <RecallTrace />
+
+      <DangerZone />
     </div>
+  );
+}
+
+// Admin-only wipe button. Hidden for kitchen role. Confirms three times so a
+// butterfinger cannot nuke the database.
+function DangerZone() {
+  const { user } = useAuth();
+  const { actions } = useStore();
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+  if (user?.role !== 'admin') return null;
+
+  async function wipe() {
+    if (!window.confirm('Wipe ALL rolls, pools, shipments, plans, usage events, and photos? Flavors and users stay. This cannot be undone.')) return;
+    if (!window.confirm('Really wipe? Type cancel in the next prompt to abort.')) return;
+    const tag = window.prompt('Type WIPE to confirm.');
+    if (tag !== 'WIPE') {
+      toast({ title: 'Wipe cancelled' });
+      return;
+    }
+    setBusy(true);
+    try {
+      await actions.wipeData();
+      toast({ title: 'Database wiped', description: 'All operational data cleared.' });
+    } catch (err: any) {
+      toast({
+        title: 'Wipe failed',
+        description: err?.message ?? String(err),
+        variant: 'destructive',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="mt-10 rounded-xl border border-destructive/40 bg-destructive/5 p-4">
+      <h3 className="text-sm font-semibold text-destructive">Danger zone</h3>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Wipes every roll, shipment, pool, plan, usage event, and photo. Keeps users and flavors. Use during pilot to scrap test runs.
+      </p>
+      <button
+        type="button"
+        onClick={wipe}
+        disabled={busy}
+        className="hover-elevate active-elevate-2 mt-3 inline-flex h-10 items-center justify-center gap-2 rounded-md border border-destructive bg-destructive px-4 text-xs font-semibold text-destructive-foreground disabled:opacity-50"
+        data-testid="button-wipe"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+        {busy ? 'Wiping...' : 'Wipe operational data'}
+      </button>
+    </section>
   );
 }
 
