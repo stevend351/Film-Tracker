@@ -281,7 +281,7 @@ function RecallTrace() {
   // Sort plans newest first.
   const plans = useMemo(() => {
     return [...state.plans].sort(
-      (a, b) => new Date(b.production_date).getTime() - new Date(a.production_date).getTime(),
+      (a, b) => new Date(b.week_of).getTime() - new Date(a.week_of).getTime(),
     );
   }, [state.plans]);
 
@@ -342,7 +342,7 @@ function RecallTrace() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
                     <span className="font-mono text-sm font-semibold">
-                      {new Date(plan.production_date).toLocaleDateString()}
+                      {new Date(plan.week_of).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
                     </span>
                     <span
                       className={cn(
