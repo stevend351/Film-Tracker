@@ -97,8 +97,8 @@ export default function TransferScreen() {
     return <PlanCompleteView />;
   }
 
-  if (hasPlan && focusedLine) {
-    return <FocusView line={focusedLine} onBack={() => setFocus(null)} />;
+  if (hasPlan && focusedLine && active) {
+    return <FocusView line={focusedLine} productionDate={active.week_of} onBack={() => setFocus(null)} />;
   }
 
   if (hasPlan && active) {
@@ -595,16 +595,17 @@ function KitchenRollRow({
 // ---------------------------------------------------------------------------
 function FocusView({
   line,
+  productionDate,
   onBack,
 }: {
   line: ReturnType<typeof computeStillNeeded>[number];
+  productionDate: string;
   onBack: () => void;
 }) {
   const { actions } = useStore();
   const { toast } = useToast();
 
   const [rollNo, setRollNo] = useState('');
-  const [prodDate, setProdDate] = useState('');
   const [photo, setPhoto] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmed, setConfirmed] = useState<Roll | null>(null);
@@ -616,7 +617,6 @@ function FocusView({
 
   function reset() {
     setRollNo('');
-    setProdDate('');
     setPhoto('');
   }
 
@@ -628,7 +628,7 @@ function FocusView({
       order_no: line.order_no ?? '',
       impressions_per_roll: line.impressions_per_roll,
       roll_no: rollNoNum,
-      production_date: prodDate ? new Date(prodDate) : null,
+      production_date: productionDate ? new Date(productionDate) : null,
       photo_data_url: photo,
     });
     setBusy(false);
@@ -696,17 +696,6 @@ function FocusView({
             placeholder="1"
             className="h-11 font-mono text-base"
             data-testid="input-roll-no"
-          />
-        </FieldRow>
-
-        <FieldRow label="Production date" htmlFor="focus-date" hint="Optional">
-          <Input
-            id="focus-date"
-            type="date"
-            value={prodDate}
-            onChange={e => setProdDate(e.target.value)}
-            className="h-11 font-mono"
-            data-testid="input-prod-date"
           />
         </FieldRow>
 
