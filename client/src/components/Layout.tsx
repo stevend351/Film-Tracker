@@ -9,12 +9,14 @@ interface NavItem {
   icon: typeof Package;
 }
 
-// Bottom nav (phone): the 5 things kitchen ops do. Log is the primary action.
-// Plan and Reports live in the desktop top bar.
+// Bottom nav (phone): the 6 things kitchen ops do. Plan was missing before so
+// Brenda had no way to know what to grab. Reports lives in the desktop top bar
+// only since admins use it on a real screen.
 const NAV: NavItem[] = [
   { href: '/',         label: 'Inventory', icon: Boxes },
+  { href: '/plan',     label: 'Plan',      icon: Calendar },
+  { href: '/transfer', label: 'Stage',     icon: ArrowRightLeft },
   { href: '/log',      label: 'Log',       icon: ClipboardList },
-  { href: '/transfer', label: 'Transfer',  icon: ArrowRightLeft },
   { href: '/receive',  label: 'Receive',   icon: Package },
   { href: '/photos',   label: 'Photos',    icon: Camera },
 ];
@@ -24,7 +26,7 @@ const DESKTOP_NAV: NavItem[] = [
   { href: '/',         label: 'Inventory', icon: Boxes },
   { href: '/log',      label: 'Log',       icon: ClipboardList },
   { href: '/plan',     label: 'Plan',      icon: Calendar },
-  { href: '/transfer', label: 'Transfer',  icon: ArrowRightLeft },
+  { href: '/transfer', label: 'Stage',     icon: ArrowRightLeft },
   { href: '/receive',  label: 'Receive',   icon: Package },
   { href: '/photos',   label: 'Photos',    icon: Camera },
   { href: '/reports',  label: 'Reports',   icon: BarChart3 },
@@ -95,7 +97,7 @@ function BottomNav() {
       role="navigation"
       aria-label="Primary mobile"
     >
-      <ul className="grid grid-cols-5">
+      <ul className="grid grid-cols-6">
         {NAV.map(item => {
           // For mobile bottom nav: '/log' tab should also light up on '/log/:rollId'.
           const active =
@@ -108,7 +110,7 @@ function BottomNav() {
               <Link
                 href={item.href}
                 className={cn(
-                  'flex min-h-[3.75rem] flex-col items-center justify-center gap-1 px-1 py-2 text-[11px] font-medium transition-colors',
+                  'flex min-h-[3.75rem] flex-col items-center justify-center gap-0.5 px-0.5 py-2 text-[10px] font-medium transition-colors',
                   active ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
                 )}
                 data-testid={`nav-${item.label.toLowerCase()}`}
