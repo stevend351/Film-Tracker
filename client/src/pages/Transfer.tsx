@@ -6,8 +6,10 @@ import {
   computeStillNeeded,
   computePlanGaps,
   activePlan,
+  rollAge,
   type PlanGap,
   type RollWithUsage,
+  type RollAgeKind,
 } from '@/store/store';
 import type { Roll } from '@/store/types';
 import { useToast } from '@/hooks/use-toast';
@@ -157,9 +159,17 @@ function PlanGapView({
     <div className="px-4 py-4 pb-32">
       <header className="mb-4">
         <h1 className="text-xl font-semibold tracking-tight">Stage Rolls</h1>
-        <p className="text-xs text-muted-foreground">
-          For production date <span className="font-mono">{fmtDate(productionDate)}</span>.
-        </p>
+        <div
+          className="mt-1.5 inline-flex items-baseline gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5"
+          data-testid="text-production-date"
+        >
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Production date
+          </span>
+          <span className="font-mono text-base font-bold tracking-tight text-primary">
+            {fmtDate(productionDate)}
+          </span>
+        </div>
       </header>
 
       {justAddedActive && (
@@ -358,13 +368,37 @@ function FlavorGapCard({
   );
 }
 
-// One row inside the kitchen-on-hand list. Shows imp remaining + a "mark
-// depleted" action if the roll has under 100 imp left (Steven's threshold).
+// Status pill mapping used inside the kitchen-on-hand list.
+function AgePill({ kind, label }: { kind: RollAgeKind; label?: string }) {
+  const styles: Record<RollAgeKind, string> = {
+    CURRENT: 'border-primary/40 bg-primary/10 text-primary',
+    UNUSED: 'border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300',
+    FREE: 'border-border bg-background text-muted-foreground',
+    IN_USE: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+    BAD: 'border-rose-500/50 bg-rose-500/10 text-rose-700 dark:text-rose-300',
+  };
+  return (
+    <span
+      className={cn(
+        'inline-flex h-4 items-center rounded-sm border px-1.5 font-mono text-[9px] font-bold uppercase tracking-wider',
+        styles[kind],
+      )}
+    >
+      {label ?? kind}
+    </span>
+  );
+}
+
+// One row inside the kitchen-on-hand list. Shows imp remaining, age pill, and
+// actions: mark depleted if low imp; mark bad whenever (rolls can be rejected
+// at the press at any time).
 function KitchenRollRow({ roll }: { roll: RollWithUsage }) {
-  const { actions } = useStore();
+  const { state, actions } = useStore();
   const { toast } = useToast();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [badOpen, setBadOpen] = useState(false);
   const lowImp = roll.impressions_remaining < 100;
+  const age = rollAge(roll, state.plans);
 
   function markDepleted() {
     actions.markRollDepleted(roll.id);
@@ -375,16 +409,28 @@ function KitchenRollRow({ roll }: { roll: RollWithUsage }) {
     setConfirmOpen(false);
   }
 
+  function markBad() {
+    actions.markRollBad(roll.id);
+    toast({
+      title: 'Roll marked bad',
+      description: `${roll.short_code} pulled from the kitchen pool.`,
+    });
+    setBadOpen(false);
+  }
+
   return (
     <li className="flex items-center justify-between gap-2 rounded-sm bg-background px-2 py-1.5">
       <div className="min-w-0 flex-1">
-        <span className="font-mono text-xs font-semibold">{roll.short_code}</span>
-        <span className="ml-2 font-mono text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-xs font-semibold">{roll.short_code}</span>
+          <AgePill kind={age.kind} label={age.kind === 'UNUSED' ? 'UNUSED' : undefined} />
+        </div>
+        <span className="font-mono text-[11px] text-muted-foreground">
           {roll.impressions_remaining.toLocaleString()} imp left
         </span>
       </div>
-      {lowImp && (
-        <>
+      <div className="flex items-center gap-1">
+        {lowImp && (
           <button
             type="button"
             onClick={() => setConfirmOpen(true)}
@@ -392,32 +438,62 @@ function KitchenRollRow({ roll }: { roll: RollWithUsage }) {
             data-testid={`button-mark-depleted-${roll.short_code}`}
           >
             <Trash2 className="h-3 w-3" />
-            Mark depleted
+            Depleted
           </button>
-          <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Mark {roll.short_code} as depleted?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  This roll has {roll.impressions_remaining.toLocaleString()} imp left. Marking it
-                  depleted removes it from the kitchen pool. Use this when there's not enough left
-                  to bother running it.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel data-testid="button-deplete-cancel">Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={markDepleted}
-                  data-testid="button-deplete-confirm"
-                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                >
-                  Mark depleted
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
-        </>
-      )}
+        )}
+        <button
+          type="button"
+          onClick={() => setBadOpen(true)}
+          className="hover-elevate active-elevate-2 inline-flex h-7 items-center gap-1 rounded-sm border border-rose-500/40 bg-rose-500/5 px-2 text-[11px] font-medium text-rose-700 dark:text-rose-300"
+          data-testid={`button-mark-bad-${roll.short_code}`}
+        >
+          <AlertTriangle className="h-3 w-3" />
+          Bad
+        </button>
+      </div>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Mark {roll.short_code} as depleted?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This roll has {roll.impressions_remaining.toLocaleString()} imp left. Marking it
+              depleted removes it from the kitchen pool. Use this when there's not enough left to
+              bother running it.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-deplete-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={markDepleted}
+              data-testid="button-deplete-confirm"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Mark depleted
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={badOpen} onOpenChange={setBadOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Mark {roll.short_code} as bad?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The press rejected this roll. It comes out of the kitchen pool and out of the runway
+              count. You can still see it on the inventory page.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-bad-cancel">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={markBad}
+              data-testid="button-bad-confirm"
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Mark bad
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </li>
   );
 }

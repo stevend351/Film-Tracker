@@ -15,6 +15,7 @@ import Receive from '@/pages/Receive';
 import PlanWeek from '@/pages/PlanWeek';
 import Transfer from '@/pages/Transfer';
 import Photos from '@/pages/Photos';
+import Orders from '@/pages/Orders';
 import Reports from '@/pages/Reports';
 import NotFound from '@/pages/not-found';
 import Login from '@/pages/Login';
@@ -29,6 +30,7 @@ function AppRouter() {
       <Route path="/plan" component={PlanWeek} />
       <Route path="/transfer" component={Transfer} />
       <Route path="/photos" component={Photos} />
+      <Route path="/orders" component={Orders} />
       <Route path="/reports" component={Reports} />
       <Route component={NotFound} />
     </Switch>

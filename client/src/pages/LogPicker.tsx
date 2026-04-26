@@ -110,7 +110,20 @@ export default function LogPickerScreen() {
     <div className="px-4 py-4 pb-24">
       <header className="mb-4">
         <h1 className="text-xl font-semibold tracking-tight">Log Usage</h1>
-        <p className="text-xs text-muted-foreground">
+        {active && (
+          <div
+            className="mt-1.5 inline-flex items-baseline gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5"
+            data-testid="text-production-date"
+          >
+            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              Production date
+            </span>
+            <span className="font-mono text-base font-bold tracking-tight text-primary">
+              {new Date(active.week_of).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+            </span>
+          </div>
+        )}
+        <p className="mt-1 text-xs text-muted-foreground">
           Pick the flavor you ran. Then pick a roll and enter impressions.
         </p>
       </header>

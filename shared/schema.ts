@@ -118,6 +118,18 @@ export const production_plans = pgTable("production_plans", {
 });
 
 // ---------------------------------------------------------------------------
+// flavor_burn_rates — Steven's manual estimate of weekly impressions burned
+// per flavor. Drives the order projector. Manual because run cadence shifts
+// month to month and we have no usage history on day one. Keyed by flavor.
+// ---------------------------------------------------------------------------
+export const flavor_burn_rates = pgTable("flavor_burn_rates", {
+  flavor_id: text("flavor_id").primaryKey().references(() => flavors.id, { onDelete: "cascade" }),
+  weekly_imp: integer("weekly_imp").notNull(),
+  updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updated_by: text("updated_by").references(() => users.id, { onDelete: "set null" }),
+});
+
+// ---------------------------------------------------------------------------
 // kitchen_photos — base64 data URLs in TEXT, ~150KB each after client downscale.
 // ---------------------------------------------------------------------------
 export const kitchen_photos = pgTable("kitchen_photos", {
@@ -185,6 +197,12 @@ export const insertProductionPlanSchema = createInsertSchema(production_plans).o
   finished_at: z.coerce.date().nullable().optional(),
 });
 
+export const insertFlavorBurnRateSchema = createInsertSchema(flavor_burn_rates).omit({
+  updated_at: true,
+}).extend({
+  weekly_imp: z.number().int().min(0),
+});
+
 export const insertKitchenPhotoSchema = createInsertSchema(kitchen_photos).extend({
   flavor_ids: z.array(z.string()).nullable().optional(),
   taken_at: z.coerce.date(),
@@ -219,3 +237,6 @@ export type InsertProductionPlan = z.infer<typeof insertProductionPlanSchema>;
 
 export type KitchenPhoto = typeof kitchen_photos.$inferSelect;
 export type InsertKitchenPhoto = z.infer<typeof insertKitchenPhotoSchema>;
+
+export type FlavorBurnRate = typeof flavor_burn_rates.$inferSelect;
+export type InsertFlavorBurnRate = z.infer<typeof insertFlavorBurnRateSchema>;

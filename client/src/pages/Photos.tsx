@@ -226,9 +226,14 @@ export default function PhotosScreen() {
         <div className="space-y-5">
           {grouped.map(group => (
             <section key={group.day}>
-              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              <h2
+                className={cn(
+                  'mb-3 flex items-baseline gap-2 text-lg font-bold tracking-tight',
+                  formatDayHeader(group.day) === 'Today' ? 'text-primary' : 'text-foreground'
+                )}
+              >
                 {formatDayHeader(group.day)}
-                <span className="ml-2 font-mono text-[10px] text-muted-foreground/70">
+                <span className="font-mono text-xs font-normal text-muted-foreground">
                   {group.day}
                 </span>
               </h2>

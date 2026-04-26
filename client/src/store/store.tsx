@@ -5,6 +5,7 @@ import { toast } from '@/hooks/use-toast';
 import type {
   Flavor, Shipment, WarehousePool, Roll, UsageEvent,
   ProductionPlan, ProductionPlanRow, KitchenPhoto, PickListLine, Location,
+  FlavorBurnRate,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -19,6 +20,7 @@ export interface State {
   usage: UsageEvent[];
   plans: ProductionPlan[];
   photos: KitchenPhoto[];
+  burnRates: FlavorBurnRate[];
 }
 
 const EMPTY_STATE: State = {
@@ -29,6 +31,7 @@ const EMPTY_STATE: State = {
   usage: [],
   plans: [],
   photos: [],
+  burnRates: [],
 };
 
 // API state response is the same shape — the server already returns these keys.
@@ -40,6 +43,7 @@ interface ApiState {
   usage: UsageEvent[];
   plans: ProductionPlan[];
   photos: KitchenPhoto[];
+  burnRates: FlavorBurnRate[];
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +88,7 @@ export interface FlavorInventory {
 export function flavorInventory(state: State): FlavorInventory[] {
   return state.flavors.map(flavor => {
     const rolls = state.rolls
-      .filter(r => r.flavor_id === flavor.id && r.location === 'KITCHEN' && r.status !== 'DEPLETED')
+      .filter(r => r.flavor_id === flavor.id && r.location === 'KITCHEN' && r.status !== 'DEPLETED' && r.status !== 'OFFLINE')
       .map(r => enrichRoll(r, state));
     const kitchen_remaining = rolls.reduce((s, r) => s + r.impressions_remaining, 0);
     const pools = state.pools.filter(
@@ -293,6 +297,71 @@ export function generateShortCode(prefix: string, existing: Set<string>): string
   return `${prefix}-${Date.now().toString(36).toUpperCase()}`;
 }
 
+// ---------------------------------------------------------------------------
+// Roll age classifier. Tells the UI which pill to render: CURRENT (this run),
+// UNUSED (carried over from a finished run), FREE (legacy, no plan), IN_USE
+// (already partially burned), or BAD (machine rejected, OFFLINE).
+// ---------------------------------------------------------------------------
+export type RollAgeKind = 'CURRENT' | 'UNUSED' | 'FREE' | 'IN_USE' | 'BAD';
+
+export interface RollAge {
+  kind: RollAgeKind;
+  // Production-date label of the originating plan, when applicable.
+  planLabel?: string;
+}
+
+export function rollAge(roll: Roll, plans: ProductionPlan[]): RollAge {
+  if (roll.status === 'OFFLINE') return { kind: 'BAD' };
+  if (roll.status === 'IN_USE') return { kind: 'IN_USE' };
+  if (!roll.production_plan_id) return { kind: 'FREE' };
+  const plan = plans.find(p => p.id === roll.production_plan_id);
+  if (!plan) return { kind: 'FREE' };
+  if (plan.status === 'LOCKED') return { kind: 'CURRENT', planLabel: plan.week_of };
+  return { kind: 'UNUSED', planLabel: plan.week_of };
+}
+
+// ---------------------------------------------------------------------------
+// Order projector. Per-flavor weekly burn rate (manual) drives runway and
+// suggested order qty. Available impressions = warehouse + kitchen non-DEPLETED
+// non-OFFLINE rolls. Trigger when runway drops below 4 weeks (3wk lead +
+// 1wk safety). Min order is 150k impressions.
+// ---------------------------------------------------------------------------
+export interface FlavorRunway {
+  flavor: Flavor;
+  weekly_imp: number;             // 0 if no rate set yet
+  available_imp: number;          // warehouse + kitchen on-hand
+  weeks: number;                  // runway in weeks (Infinity if weekly_imp=0)
+  stockout_date: string | null;   // ISO date or null
+  suggested_qty: number;          // rounded up to 50k
+  triggers: boolean;              // weeks < 4 AND weekly_imp > 0
+}
+
+export function flavorRunway(state: State): FlavorRunway[] {
+  const inv = flavorInventory(state);
+  const today = new Date();
+  return state.flavors.map(flavor => {
+    const inv_for = inv.find(i => i.flavor.id === flavor.id);
+    const kitchen_imp = inv_for?.kitchen_remaining ?? 0;
+    const warehouse_imp = inv_for?.warehouse_impressions_remaining ?? 0;
+    const available_imp = kitchen_imp + warehouse_imp;
+    const rate = state.burnRates.find(b => b.flavor_id === flavor.id);
+    const weekly_imp = rate?.weekly_imp ?? 0;
+    let weeks = Infinity;
+    let stockout_date: string | null = null;
+    if (weekly_imp > 0) {
+      weeks = available_imp / weekly_imp;
+      const ms = today.getTime() + weeks * 7 * 24 * 60 * 60 * 1000;
+      stockout_date = new Date(ms).toISOString().slice(0, 10);
+    }
+    // 8 weeks = 2 months target stock. Min order 150k. Round up to nearest 50k.
+    const target = weekly_imp * 8;
+    const raw = Math.max(150_000, target);
+    const suggested_qty = Math.ceil(raw / 50_000) * 50_000;
+    const triggers = weekly_imp > 0 && weeks < 4;
+    return { flavor, weekly_imp, available_imp, weeks, stockout_date, suggested_qty, triggers };
+  });
+}
+
 // uuid-shaped id for client-minted rows. crypto.randomUUID is on every modern
 // browser including iOS Safari 15.4+.
 function uuid(prefix: string): string {
@@ -334,6 +403,8 @@ export interface StageRollVerifiedError {
 }
 
 export interface StoreActions {
+  setBurnRate: (flavor_id: string, weekly_imp: number) => Promise<{ ok: boolean; error?: string }>;
+  markRollBad: (roll_id: string) => void;
   receiveShipment: (orderNo: string, lines: ReceiveLine[]) => Shipment;
   // Label-driven staging: server validates label fields against pool, mints
   // short_code, and persists roll + photo atomically. Returns the result
@@ -502,8 +573,30 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     onError: onError('Save photo'),
   });
 
+  const burnRateMut = useMutation({
+    mutationFn: async (vars: { flavor_id: string; weekly_imp: number }) => {
+      const res = await apiRequest('POST', '/api/burn-rates', vars);
+      return res.json();
+    },
+    onSuccess: invalidate,
+    onError: onError('Save burn rate'),
+  });
+
   // ------ actions surface ------
   const actions = useMemo<StoreActions>(() => ({
+    async setBurnRate(flavor_id, weekly_imp) {
+      try {
+        await burnRateMut.mutateAsync({ flavor_id, weekly_imp });
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+
+    markRollBad(roll_id) {
+      rollPatchMut.mutate({ id: roll_id, patch: { status: 'OFFLINE' } });
+    },
+
     receiveShipment(orderNo, lines) {
       const shipment_id = uuid('sh');
       const now = new Date().toISOString();
@@ -692,7 +785,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       queryClient.invalidateQueries({ queryKey: STATE_KEY });
     },
     // The mutation hooks are stable across renders, so depend only on `state`.
-  }), [state, shipmentMut, rollMut, rollPatchMut, usageMut, planMut, planExtendMut, planFinishMut, planDeleteMut, planRowDeleteMut, photoMut, queryClient]);
+  }), [state, shipmentMut, rollMut, rollPatchMut, usageMut, planMut, planExtendMut, planFinishMut, planDeleteMut, planRowDeleteMut, photoMut, burnRateMut, queryClient]);
 
   return (
     <StoreContext.Provider value={{ state, actions, isLoading, isError }}>

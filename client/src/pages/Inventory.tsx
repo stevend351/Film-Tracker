@@ -1,9 +1,12 @@
 import { useMemo, useState } from 'react';
 import { useLocation } from 'wouter';
-import { ChevronDown, Search, ImageOff } from 'lucide-react';
-import { useStore, flavorInventory, type FlavorInventory } from '@/store/store';
+import { ChevronDown, Search, ImageOff, X } from 'lucide-react';
+import {
+  useStore, flavorInventory, activePlan, rollAge,
+  type FlavorInventory,
+} from '@/store/store';
 import type { RollWithUsage } from '@/store/store';
-import type { KitchenPhoto } from '@/store/types';
+import type { KitchenPhoto, ProductionPlan } from '@/store/types';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
@@ -35,13 +38,25 @@ function stagedAgeLabel(iso?: string | null): string | null {
   return `${wks}w ago`;
 }
 
+// Deterministic hue per flavor id, so the same flavor always paints the same
+// color stripe. 360 / 15 flavors = 24 degrees apart minimum.
+function flavorHue(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) {
+    h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  }
+  return h % 360;
+}
+
 export default function InventoryScreen() {
   const { state } = useStore();
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState('');
+  const [zoomPhoto, setZoomPhoto] = useState<KitchenPhoto | null>(null);
 
   const inv = useMemo(() => flavorInventory(state), [state]);
   const photoByRoll = useMemo(() => latestPhotoByRoll(state.photos), [state.photos]);
+  const plan = activePlan(state);
 
   const q = search.trim().toLowerCase();
   const filtered = q
@@ -86,6 +101,7 @@ export default function InventoryScreen() {
         count={totalKitchenRolls}
         countLabel="rolls"
         impressions={totalKitchenImp}
+        accent="emerald"
         defaultOpen
       >
         {kitchenFlavors.length === 0 ? (
@@ -97,7 +113,9 @@ export default function InventoryScreen() {
                 key={f.flavor.id}
                 inv={f}
                 photoByRoll={photoByRoll}
+                plan={plan}
                 onLog={(roll) => setLocation(`/log/${roll.id}`)}
+                onZoomPhoto={setZoomPhoto}
               />
             ))}
           </div>
@@ -111,6 +129,7 @@ export default function InventoryScreen() {
         count={totalWarehouseRolls}
         countLabel="rolls"
         impressions={totalWarehouseImp}
+        accent="sky"
       >
         {warehouseFlavors.length === 0 ? (
           <EmptyState text="No untagged rolls in the warehouse." />
@@ -122,19 +141,38 @@ export default function InventoryScreen() {
           </div>
         )}
       </Section>
+
+      {zoomPhoto && (
+        <PhotoZoom photo={zoomPhoto} onClose={() => setZoomPhoto(null)} />
+      )}
     </div>
   );
 }
 
 function Section({
-  title, count, countLabel, impressions, children, defaultOpen = false,
+  title, count, countLabel, impressions, children, defaultOpen = false, accent,
 }: {
-  title: string; count: number; countLabel: string; impressions: number;
-  children: React.ReactNode; defaultOpen?: boolean;
+  title: string;
+  count: number;
+  countLabel: string;
+  impressions: number;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  // Color separates kitchen (emerald, what Brenda has now) from warehouse
+  // (sky, the deeper pool). High contrast on purpose.
+  accent: 'emerald' | 'sky';
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const accentCls =
+    accent === 'emerald'
+      ? 'border-emerald-500/40 bg-emerald-500/[0.06]'
+      : 'border-sky-500/40 bg-sky-500/[0.06]';
+  const titleCls =
+    accent === 'emerald'
+      ? 'text-emerald-300'
+      : 'text-sky-300';
   return (
-    <section className="rounded-xl border border-card-border bg-card overflow-hidden">
+    <section className={cn('rounded-xl border-2 overflow-hidden', accentCls)}>
       <button
         type="button"
         className="hover-elevate w-full flex items-center justify-between px-4 py-3 text-left"
@@ -142,11 +180,14 @@ function Section({
         data-testid={`section-${title.toLowerCase()}`}
       >
         <div>
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">{title}</h2>
-          <p className="mt-0.5 text-base font-medium">
-            {count} {countLabel} <span className="text-muted-foreground font-normal">·</span>{' '}
+          <h2 className={cn('text-sm font-bold uppercase tracking-wider', titleCls)}>
+            {title}
+          </h2>
+          <p className="mt-0.5 text-lg font-semibold">
+            <span className="font-mono">{count}</span> {countLabel}{' '}
+            <span className="text-muted-foreground font-normal">·</span>{' '}
             <span className="font-mono">{impressions.toLocaleString()}</span>{' '}
-            <span className="text-muted-foreground font-normal">imp</span>
+            <span className="text-muted-foreground font-normal text-base">imp</span>
           </p>
         </div>
         <ChevronDown
@@ -159,11 +200,13 @@ function Section({
 }
 
 function KitchenFlavorCard({
-  inv, photoByRoll, onLog,
+  inv, photoByRoll, plan, onLog, onZoomPhoto,
 }: {
   inv: FlavorInventory;
   photoByRoll: Map<string, KitchenPhoto>;
+  plan: ProductionPlan | null;
   onLog: (r: RollWithUsage) => void;
+  onZoomPhoto: (p: KitchenPhoto) => void;
 }) {
   // Use up partials first: sort by remaining ASC, then by tagged_at DESC as tiebreak.
   const sorted = [...inv.kitchen_rolls].sort((a, b) => {
@@ -172,12 +215,19 @@ function KitchenFlavorCard({
     }
     return a.tagged_at < b.tagged_at ? 1 : -1;
   });
+  const hue = flavorHue(inv.flavor.id);
   return (
-    <div className="rounded-lg border border-border bg-background/40 p-3">
+    <div
+      className="rounded-lg border border-border bg-background/40 p-3 relative overflow-hidden"
+      style={{ borderLeft: `4px solid hsl(${hue} 70% 55%)` }}
+    >
       <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-sm font-semibold">{inv.flavor.name}</h3>
-        <span className="text-xs font-mono text-muted-foreground">
-          {inv.kitchen_remaining.toLocaleString()} imp
+        <h3 className="text-base font-semibold">{inv.flavor.name}</h3>
+        <span className="text-sm font-mono font-semibold">
+          <span className="text-foreground">{inv.kitchen_rolls.length}</span>
+          <span className="text-muted-foreground"> roll{inv.kitchen_rolls.length === 1 ? '' : 's'} · </span>
+          <span className="text-foreground">{inv.kitchen_remaining.toLocaleString()}</span>
+          <span className="text-muted-foreground"> imp</span>
         </span>
       </div>
       <div className="space-y-2">
@@ -186,7 +236,10 @@ function KitchenFlavorCard({
             key={r.id}
             roll={r}
             photo={photoByRoll.get(r.id)}
+            plan={plan}
+            allPlans={plan ? [plan] : []}
             onLog={() => onLog(r)}
+            onZoomPhoto={onZoomPhoto}
           />
         ))}
       </div>
@@ -195,36 +248,46 @@ function KitchenFlavorCard({
 }
 
 function RollRow({
-  roll, photo, onLog,
+  roll, photo, plan, onLog, onZoomPhoto,
 }: {
   roll: RollWithUsage;
   photo?: KitchenPhoto;
+  plan: ProductionPlan | null;
+  allPlans: ProductionPlan[];
   onLog: () => void;
+  onZoomPhoto: (p: KitchenPhoto) => void;
 }) {
+  const { state } = useStore();
   const age = stagedAgeLabel(roll.staged_at ?? roll.tagged_at);
+  const ageInfo = rollAge(roll, state.plans);
+  // Hide Log when there is no active plan. Steven was firm: kitchen should
+  // not log usage outside a production run.
+  const showLog = plan !== null;
   return (
     <div className="flex items-center gap-3 rounded-md p-2 hover-elevate active-elevate-2">
-      {/* Thumbnail */}
-      <div className="h-12 w-12 shrink-0 overflow-hidden rounded-md border border-border bg-muted/40">
+      {/* Thumbnail \u2014 clickable for zoom. */}
+      <button
+        type="button"
+        className="h-14 w-14 shrink-0 overflow-hidden rounded-md border border-border bg-muted/40"
+        onClick={() => photo && onZoomPhoto(photo)}
+        disabled={!photo}
+        aria-label={photo ? 'Zoom photo' : 'No photo'}
+        data-testid={`thumb-roll-${roll.short_code}`}
+      >
         {photo ? (
-          <img
-            src={photo.data_url}
-            alt=""
-            className="h-full w-full object-cover"
-            data-testid={`thumb-roll-${roll.short_code}`}
-          />
+          <img src={photo.data_url} alt="" className="h-full w-full object-cover" />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-muted-foreground/60">
             <ImageOff className="h-4 w-4" />
           </div>
         )}
-      </div>
+      </button>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-mono text-sm font-medium" data-testid={`text-rollcode-${roll.short_code}`}>
+          <span className="font-mono text-base font-semibold" data-testid={`text-rollcode-${roll.short_code}`}>
             {roll.short_code}
           </span>
-          <StatusPill status={roll.status} />
+          <AgePill ageInfo={ageInfo} />
           {roll.override_extra_wrap && (
             <span className="text-[10px] font-medium uppercase text-amber-500">override</span>
           )}
@@ -240,29 +303,67 @@ function RollRow({
           </p>
         )}
         <div className="mt-1.5 flex items-center gap-2">
-          <Progress value={roll.pct_used} className="h-1.5 flex-1" />
-          <span className="text-[11px] font-mono text-muted-foreground tabular-nums">
+          <Progress value={roll.pct_used} className="h-2 flex-1" />
+          <span className="text-xs font-mono font-semibold tabular-nums text-foreground">
             {roll.impressions_used.toLocaleString()}/{roll.impressions_per_roll.toLocaleString()}
           </span>
         </div>
       </div>
-      <button
-        type="button"
-        onClick={onLog}
-        className="hover-elevate active-elevate-2 inline-flex h-10 min-w-[3.5rem] items-center justify-center rounded-md border border-primary-border bg-primary px-3 text-xs font-semibold text-primary-foreground"
-        data-testid={`button-log-${roll.short_code}`}
-      >
-        Log
-      </button>
+      {showLog && (
+        <button
+          type="button"
+          onClick={onLog}
+          className="hover-elevate active-elevate-2 inline-flex h-10 min-w-[3.5rem] items-center justify-center rounded-md border border-primary-border bg-primary px-3 text-xs font-semibold text-primary-foreground"
+          data-testid={`button-log-${roll.short_code}`}
+        >
+          Log
+        </button>
+      )}
     </div>
   );
 }
 
-function StatusPill({ status }: { status: RollWithUsage['status'] }) {
-  const cls = status === 'STAGED' ? 'status-staged' : status === 'IN_USE' ? 'status-in-use' : 'status-depleted';
+function AgePill({ ageInfo }: { ageInfo: ReturnType<typeof rollAge> }) {
+  const fmt = (s?: string) => {
+    if (!s) return '';
+    const d = s.length === 10 ? new Date(`${s}T00:00:00`) : new Date(s);
+    if (isNaN(d.getTime())) return s;
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+  if (ageInfo.kind === 'BAD') {
+    return (
+      <span className="rounded-full px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-rose-500/20 text-rose-300 border border-rose-500/40">
+        BAD
+      </span>
+    );
+  }
+  if (ageInfo.kind === 'IN_USE') {
+    return (
+      <span className="status-in-use rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+        in use
+      </span>
+    );
+  }
+  if (ageInfo.kind === 'CURRENT') {
+    return (
+      <span className="status-staged rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+        staged
+      </span>
+    );
+  }
+  if (ageInfo.kind === 'UNUSED') {
+    return (
+      <span
+        className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-amber-500/20 text-amber-200 border border-amber-500/40"
+        title={`Carryover from ${fmt(ageInfo.planLabel)}`}
+      >
+        Unused {fmt(ageInfo.planLabel)}
+      </span>
+    );
+  }
   return (
-    <span className={cn('rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide', cls)}>
-      {status === 'IN_USE' ? 'in use' : status.toLowerCase()}
+    <span className="status-staged rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+      free
     </span>
   );
 }
@@ -273,11 +374,19 @@ function WarehouseFlavorChip({ inv }: { inv: FlavorInventory }) {
     rolls: p.rolls_received - p.rolls_tagged_out,
     imp: p.impressions_per_roll,
   })).filter(v => v.rolls > 0);
+  const hue = flavorHue(inv.flavor.id);
   return (
-    <div className="rounded-lg border border-border bg-background/40 p-3">
-      <h4 className="text-sm font-medium leading-snug">{inv.flavor.name}</h4>
-      <p className="mt-1 text-xs font-mono text-muted-foreground">
-        {inv.warehouse_rolls_remaining} rolls · {inv.warehouse_impressions_remaining.toLocaleString()} imp
+    <div
+      className="rounded-lg border border-border bg-background/40 p-3"
+      style={{ borderLeft: `4px solid hsl(${hue} 70% 55%)` }}
+    >
+      <h4 className="text-sm font-semibold leading-snug">{inv.flavor.name}</h4>
+      <p className="mt-1 text-sm font-mono font-semibold">
+        <span className="text-foreground">{inv.warehouse_rolls_remaining}</span>
+        <span className="text-muted-foreground"> roll{inv.warehouse_rolls_remaining === 1 ? '' : 's'}</span>
+      </p>
+      <p className="text-xs font-mono text-muted-foreground">
+        {inv.warehouse_impressions_remaining.toLocaleString()} imp
       </p>
       {variants.length > 1 && (
         <div className="mt-1.5 space-y-0.5">
@@ -287,6 +396,38 @@ function WarehouseFlavorChip({ inv }: { inv: FlavorInventory }) {
             </p>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+function PhotoZoom({ photo, onClose }: { photo: KitchenPhoto; onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4"
+      onClick={onClose}
+      role="dialog"
+      aria-label="Roll photo"
+      data-testid="photo-zoom"
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute top-4 right-4 inline-flex h-10 w-10 items-center justify-center rounded-full bg-background/80 text-foreground"
+        aria-label="Close"
+      >
+        <X className="h-5 w-5" />
+      </button>
+      <img
+        src={photo.data_url}
+        alt={photo.caption ?? ''}
+        className="max-h-full max-w-full rounded-lg object-contain"
+        onClick={e => e.stopPropagation()}
+      />
+      {photo.caption && (
+        <p className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-full bg-background/80 px-4 py-1 font-mono text-sm">
+          {photo.caption}
+        </p>
       )}
     </div>
   );

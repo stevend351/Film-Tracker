@@ -70,4 +70,16 @@ export async function ensureSchema(): Promise<void> {
     ON production_plans ((1))
     WHERE status = 'LOCKED'
   `;
+
+  // Manual weekly burn rate per flavor. Drives the order projector. Steven
+  // updates these monthly as production cadence shifts. No usage history
+  // computation here, this is intentionally a manual input.
+  await sql`
+    CREATE TABLE IF NOT EXISTS flavor_burn_rates (
+      flavor_id TEXT PRIMARY KEY REFERENCES flavors(id) ON DELETE CASCADE,
+      weekly_imp INTEGER NOT NULL,
+      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL
+    )
+  `;
 }

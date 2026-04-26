@@ -70,9 +70,19 @@ function ActiveRunView({
           <Lock className="h-4 w-4 text-amber-500" />
           <h1 className="text-xl font-semibold tracking-tight">Run in progress</h1>
         </div>
+        <div
+          className="mt-1.5 inline-flex items-baseline gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5"
+          data-testid="text-production-date"
+        >
+          <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Production date
+          </span>
+          <span className="font-mono text-base font-bold tracking-tight text-primary">
+            {fmtDate(plan.week_of)}
+          </span>
+        </div>
         <p className="text-xs text-muted-foreground mt-1">
-          Production date {fmtDate(plan.week_of)}. To start a new plan with a new
-          date, finish this run on the Log screen first.
+          To start a new plan with a new date, finish this run on the Log screen first.
         </p>
       </header>
 

@@ -1,6 +1,6 @@
 import {
   users, flavors, shipments, warehouse_pools, rolls, usage_events,
-  production_plans, kitchen_photos,
+  production_plans, kitchen_photos, flavor_burn_rates,
 } from "@shared/schema";
 import type {
   User, InsertUser,
@@ -11,6 +11,7 @@ import type {
   UsageEvent, InsertUsageEvent,
   ProductionPlan, InsertProductionPlan,
   KitchenPhoto, InsertKitchenPhoto,
+  FlavorBurnRate, InsertFlavorBurnRate,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, sql as dsql } from "drizzle-orm";
@@ -61,6 +62,10 @@ export interface IStorage {
   // photos
   listPhotos(): Promise<KitchenPhoto[]>;
   createPhoto(photo: InsertKitchenPhoto): Promise<KitchenPhoto>;
+
+  // burn rates
+  listBurnRates(): Promise<FlavorBurnRate[]>;
+  upsertBurnRate(input: InsertFlavorBurnRate): Promise<FlavorBurnRate>;
 
   // admin
   wipeOperationalData(): Promise<void>;
@@ -553,6 +558,33 @@ export class DatabaseStorage implements IStorage {
     const existing = await db.select().from(kitchen_photos).where(eq(kitchen_photos.id, photo.id)).limit(1);
     if (!existing[0]) throw new Error(`createPhoto: row missing: ${photo.id}`);
     return existing[0];
+  }
+
+  // ---- burn rates -------------------------------------------------------
+  async listBurnRates(): Promise<FlavorBurnRate[]> {
+    return db.select().from(flavor_burn_rates);
+  }
+
+  async upsertBurnRate(input: InsertFlavorBurnRate): Promise<FlavorBurnRate> {
+    const r = await db
+      .insert(flavor_burn_rates)
+      .values({
+        flavor_id: input.flavor_id,
+        weekly_imp: input.weekly_imp,
+        updated_by: input.updated_by ?? null,
+        updated_at: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: flavor_burn_rates.flavor_id,
+        set: {
+          weekly_imp: input.weekly_imp,
+          updated_by: input.updated_by ?? null,
+          updated_at: new Date(),
+        },
+      })
+      .returning();
+    if (!r[0]) throw new Error(`upsertBurnRate: failed for ${input.flavor_id}`);
+    return r[0];
   }
 
   // ---- admin ------------------------------------------------------------

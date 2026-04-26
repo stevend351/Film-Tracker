@@ -115,3 +115,10 @@ export interface SessionUser {
   role: 'admin' | 'kitchen';
   name: string;
 }
+
+export interface FlavorBurnRate {
+  flavor_id: string;
+  weekly_imp: number;
+  updated_at: string;
+  updated_by?: string | null;
+}

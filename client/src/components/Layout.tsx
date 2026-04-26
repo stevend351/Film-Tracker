@@ -1,8 +1,8 @@
 import { type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
-import { Package, Calendar, ArrowRightLeft, Boxes, Camera, BarChart3, ClipboardList } from 'lucide-react';
+import { Package, Calendar, ArrowRightLeft, Boxes, Camera, BarChart3, ClipboardList, ShoppingCart } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useStore, activePlan } from '@/store/store';
+import { useStore, activePlan, flavorRunway } from '@/store/store';
 
 interface NavItem {
   href: string;
@@ -22,13 +22,14 @@ const NAV: NavItem[] = [
   { href: '/photos',   label: 'Photos',    icon: Camera },
 ];
 
-// Desktop top bar adds Plan + Reports.
+// Desktop top bar adds Plan + Reports + Orders.
 const DESKTOP_NAV: NavItem[] = [
   { href: '/',         label: 'Inventory', icon: Boxes },
   { href: '/log',      label: 'Log',       icon: ClipboardList },
   { href: '/plan',     label: 'Plan',      icon: Calendar },
   { href: '/transfer', label: 'Stage',     icon: ArrowRightLeft },
   { href: '/receive',  label: 'Receive',   icon: Package },
+  { href: '/orders',   label: 'Orders',    icon: ShoppingCart },
   { href: '/photos',   label: 'Photos',    icon: Camera },
   { href: '/reports',  label: 'Reports',   icon: BarChart3 },
 ];
@@ -48,6 +49,7 @@ function SyncBanner() {
   const { state } = useStore();
   const plan = activePlan(state);
   const planDate = plan ? fmtBannerDate(plan.week_of) : null;
+  const planFull = plan ? fmtFullDate(plan.week_of) : null;
 
   return (
     <div className="safe-top sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-md">
@@ -88,12 +90,12 @@ function SyncBanner() {
         <div className="flex items-center gap-2">
           {planDate && (
             <span
-              className="inline-flex h-6 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 text-[10px] font-semibold uppercase tracking-wider text-primary"
-              data-testid="chip-production-date"
+              className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/15 px-3 py-1 text-sm font-bold tracking-wide text-primary"
+              data-testid="chip-production-date-desktop"
               title="Active production date"
             >
-              <Calendar className="h-3 w-3" />
-              <span className="font-mono normal-case">{planDate}</span>
+              <Calendar className="h-4 w-4" />
+              <span>{planFull}</span>
             </span>
           )}
           {/* Phone: just the title, right side */}
@@ -102,8 +104,64 @@ function SyncBanner() {
           </span>
         </div>
       </div>
+
+      {/* Big production date row, visible on phone. Brenda needs to see this
+          fast and hard — small chips were getting missed. */}
+      {planDate && (
+        <div
+          className="flex items-center justify-center gap-2 border-t border-primary/20 bg-primary/10 px-4 py-2 md:hidden"
+          data-testid="banner-production-date"
+        >
+          <Calendar className="h-5 w-5 text-primary" />
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-primary/80">
+            Producing
+          </span>
+          <span className="text-base font-bold tracking-wide text-primary">
+            {planFull}
+          </span>
+        </div>
+      )}
+
+      <RunwayBanner />
     </div>
   );
+}
+
+// Inventory-style alert for any flavor under 4 weeks of runway. Visible on
+// every page so Steven cannot miss a stockout window. Hidden when no flavors
+// trigger so it doesn't add noise.
+function RunwayBanner() {
+  const { state } = useStore();
+  const triggered = flavorRunway(state).filter(r => r.triggers);
+  if (triggered.length === 0) return null;
+  const top = [...triggered].sort((a, b) => a.weeks - b.weeks).slice(0, 3);
+  return (
+    <Link
+      href="/orders"
+      className="flex items-center gap-2 border-t border-amber-500/30 bg-amber-500/10 px-4 py-2 text-amber-200 hover:bg-amber-500/15"
+      data-testid="banner-runway-alert"
+    >
+      <ShoppingCart className="h-4 w-4 flex-shrink-0" />
+      <span className="text-xs font-semibold uppercase tracking-wider">
+        Order soon
+      </span>
+      <span className="truncate text-xs font-medium">
+        {top.map(t => `${t.flavor.name} (${t.weeks.toFixed(1)}w)`).join(' · ')}
+        {triggered.length > top.length ? ` · +${triggered.length - top.length}` : ''}
+      </span>
+    </Link>
+  );
+}
+
+function fmtFullDate(s: string): string {
+  const d = s.length === 10 ? new Date(`${s}T00:00:00`) : new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
 }
 
 function fmtBannerDate(s: string): string {

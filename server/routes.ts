@@ -8,6 +8,7 @@ import {
 import {
   insertShipmentSchema, insertWarehousePoolSchema, insertRollSchema,
   insertUsageEventSchema, insertProductionPlanSchema, insertKitchenPhotoSchema,
+  insertFlavorBurnRateSchema,
 } from "@shared/schema";
 import { z } from "zod";
 
@@ -67,7 +68,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Single-payload state endpoint. Cheap on a small dataset, simple to invalidate.
   // -------------------------------------------------------------------------
   app.get("/api/state", requireAuth, async (_req: Request, res: Response) => {
-    const [flavors, shipments, pools, rolls, usage, plans, photos] = await Promise.all([
+    const [flavors, shipments, pools, rolls, usage, plans, photos, burnRates] = await Promise.all([
       storage.listFlavors(),
       storage.listShipments(),
       storage.listPools(),
@@ -75,8 +76,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       storage.listUsageEvents(),
       storage.listPlans(),
       storage.listPhotos(),
+      storage.listBurnRates(),
     ]);
-    res.json({ flavors, shipments, pools, rolls, usage, plans, photos });
+    res.json({ flavors, shipments, pools, rolls, usage, plans, photos, burnRates });
   });
 
   // -------------------------------------------------------------------------
@@ -242,6 +244,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/admin/wipe", requireAdmin, async (_req: Request, res: Response) => {
     await storage.wipeOperationalData();
     res.json({ ok: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Burn rates — Steven manually sets weekly impressions per flavor. Drives
+  // the order projector. Admin only.
+  // -------------------------------------------------------------------------
+  app.get("/api/burn-rates", requireAuth, async (_req: Request, res: Response) => {
+    const rates = await storage.listBurnRates();
+    res.json(rates);
+  });
+
+  app.post("/api/burn-rates", requireAdmin, async (req: Request, res: Response) => {
+    const parsed = insertFlavorBurnRateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid burn rate", details: parsed.error.flatten() });
+    }
+    const result = await storage.upsertBurnRate({
+      ...parsed.data,
+      updated_by: req.user!.id,
+    });
+    res.json(result);
   });
 
   app.post("/api/photos", requireAuth, async (req: Request, res: Response) => {
