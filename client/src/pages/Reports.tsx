@@ -1,22 +1,36 @@
 import { useMemo, useState } from 'react';
-import { BarChart3, AlertTriangle, Trash2, ChevronDown, ChevronRight, ShieldCheck } from 'lucide-react';
+import { BarChart3, AlertTriangle, ChevronDown, ChevronRight, ShieldCheck, Package } from 'lucide-react';
 import { useStore } from '@/store/store';
-import { useAuth } from '@/store/auth';
-import { useToast } from '@/hooks/use-toast';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 
-interface FlavorReportRow {
+interface OrderFlavorRow {
   flavor_id: string;
   flavor_name: string;
   prefix: string;
-  imp_purchased: number;       // sum of pool.rolls_received * impressions_per_roll for shipments in range
-  imp_used: number;            // sum of usage events (for rolls of this flavor) in range
-  imp_used_override: number;   // usage on rolls flagged override_extra_wrap
+  imp_purchased: number;       // sum of pool.rolls_received * impressions_per_roll
+  imp_used: number;            // usage events on rolls of this order + flavor
+  imp_used_override: number;
   rolls_purchased: number;
   rolls_with_override: number;
-  waste_pct: number;           // override imp / used imp * 100
+  waste_pct: number;
+}
+
+interface OrderReportRow {
+  order_no: string;
+  shipment_ids: string[];
+  received_dates: string[];     // ISO strings, sorted ascending
+  earliest_received: string;    // first received_at, used for sorting
+  flavors: OrderFlavorRow[];
+  totals: {
+    imp_purchased: number;
+    imp_used: number;
+    imp_used_override: number;
+    rolls_purchased: number;
+    rolls_with_override: number;
+    waste_pct: number;
+  };
 }
 
 function todayISO(): string {
@@ -29,85 +43,138 @@ function daysAgoISO(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+function fmtDate(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 export default function ReportsScreen() {
   const { state } = useStore();
-  const [from, setFrom] = useState<string>(daysAgoISO(60));
+  const [from, setFrom] = useState<string>(daysAgoISO(180));
   const [to, setTo] = useState<string>(todayISO());
+  const [openOrderNo, setOpenOrderNo] = useState<string | null>(null);
 
-  const rows: FlavorReportRow[] = useMemo(() => {
+  const orders: OrderReportRow[] = useMemo(() => {
     const fromTs = new Date(from + 'T00:00:00Z').getTime();
     const toTs = new Date(to + 'T23:59:59Z').getTime();
 
-    // Shipments in range (received within window)
-    const shipmentsInRange = new Set(
-      state.shipments
-        .filter(s => {
-          const t = new Date(s.received_at).getTime();
-          return t >= fromTs && t <= toTs;
-        })
-        .map(s => s.id),
-    );
-
-    // Rolls indexed by id for override lookup
+    const flavorById = new Map(state.flavors.map(f => [f.id, f]));
     const rollById = new Map(state.rolls.map(r => [r.id, r]));
 
-    return state.flavors.map(flavor => {
-      // Impressions purchased: pools tied to in-range shipments
-      const flavorPools = state.pools.filter(
-        p => p.flavor_id === flavor.id && shipmentsInRange.has(p.shipment_id),
-      );
-      const imp_purchased = flavorPools.reduce(
-        (s, p) => s + p.rolls_received * p.impressions_per_roll,
-        0,
-      );
-      const rolls_purchased = flavorPools.reduce((s, p) => s + p.rolls_received, 0);
+    // Group shipments by order_no, filtered to in-range received date.
+    const byOrder = new Map<string, { shipmentIds: Set<string>; receivedDates: string[] }>();
+    for (const s of state.shipments) {
+      const t = new Date(s.received_at).getTime();
+      if (t < fromTs || t > toTs) continue;
+      const key = s.order_no || '(no order #)';
+      const existing = byOrder.get(key) ?? { shipmentIds: new Set<string>(), receivedDates: [] };
+      existing.shipmentIds.add(s.id);
+      existing.receivedDates.push(s.received_at);
+      byOrder.set(key, existing);
+    }
 
-      // Usage events in range whose roll is this flavor
-      const flavorRollIds = new Set(state.rolls.filter(r => r.flavor_id === flavor.id).map(r => r.id));
-      const usageInRange = state.usage.filter(u => {
-        if (!flavorRollIds.has(u.roll_id)) return false;
-        const t = new Date(u.created_at).getTime();
-        return t >= fromTs && t <= toTs;
+    const result: OrderReportRow[] = [];
+    for (const [order_no, { shipmentIds, receivedDates }] of byOrder.entries()) {
+      // Pools = what was purchased on this order
+      const orderPools = state.pools.filter(p => shipmentIds.has(p.shipment_id));
+      // Roll IDs received under this order_no, regardless of which pool they came from.
+      // A roll's order_no is set on creation from the shipment, so this is the source of truth.
+      const orderRollIds = new Set(
+        state.rolls.filter(r => r.order_no === order_no).map(r => r.id),
+      );
+
+      // Bucket pools and roll-derived usage by flavor
+      const flavorBuckets = new Map<string, OrderFlavorRow>();
+      for (const p of orderPools) {
+        const flavor = flavorById.get(p.flavor_id);
+        if (!flavor) continue;
+        const bucket = flavorBuckets.get(p.flavor_id) ?? {
+          flavor_id: p.flavor_id,
+          flavor_name: flavor.name,
+          prefix: flavor.prefix,
+          imp_purchased: 0,
+          imp_used: 0,
+          imp_used_override: 0,
+          rolls_purchased: 0,
+          rolls_with_override: 0,
+          waste_pct: 0,
+        };
+        bucket.imp_purchased += p.rolls_received * p.impressions_per_roll;
+        bucket.rolls_purchased += p.rolls_received;
+        flavorBuckets.set(p.flavor_id, bucket);
+      }
+
+      // Usage events on rolls from this order
+      for (const u of state.usage) {
+        if (!orderRollIds.has(u.roll_id)) continue;
+        const roll = rollById.get(u.roll_id);
+        if (!roll) continue;
+        const bucket = flavorBuckets.get(roll.flavor_id);
+        if (!bucket) continue;
+        bucket.imp_used += u.impressions_used;
+        if (roll.override_extra_wrap) {
+          bucket.imp_used_override += u.impressions_used;
+        }
+      }
+
+      // Roll override counts per flavor for this order
+      for (const r of state.rolls) {
+        if (r.order_no !== order_no) continue;
+        if (!r.override_extra_wrap) continue;
+        const bucket = flavorBuckets.get(r.flavor_id);
+        if (bucket) bucket.rolls_with_override += 1;
+      }
+
+      // Finalize waste %
+      const flavors = Array.from(flavorBuckets.values()).map(b => ({
+        ...b,
+        waste_pct: b.imp_used > 0 ? (b.imp_used_override / b.imp_used) * 100 : 0,
+      }));
+      flavors.sort((a, b) => a.flavor_name.localeCompare(b.flavor_name));
+
+      const totals = flavors.reduce(
+        (acc, f) => ({
+          imp_purchased: acc.imp_purchased + f.imp_purchased,
+          imp_used: acc.imp_used + f.imp_used,
+          imp_used_override: acc.imp_used_override + f.imp_used_override,
+          rolls_purchased: acc.rolls_purchased + f.rolls_purchased,
+          rolls_with_override: acc.rolls_with_override + f.rolls_with_override,
+        }),
+        { imp_purchased: 0, imp_used: 0, imp_used_override: 0, rolls_purchased: 0, rolls_with_override: 0 },
+      );
+      const waste_pct = totals.imp_used > 0 ? (totals.imp_used_override / totals.imp_used) * 100 : 0;
+
+      const sortedDates = receivedDates.slice().sort();
+      result.push({
+        order_no,
+        shipment_ids: Array.from(shipmentIds),
+        received_dates: sortedDates,
+        earliest_received: sortedDates[0] ?? '',
+        flavors,
+        totals: { ...totals, waste_pct },
       });
+    }
 
-      const imp_used = usageInRange.reduce((s, u) => s + u.impressions_used, 0);
-      const imp_used_override = usageInRange.reduce((s, u) => {
-        const r = rollById.get(u.roll_id);
-        return s + (r?.override_extra_wrap ? u.impressions_used : 0);
-      }, 0);
-      const rolls_with_override = state.rolls.filter(
-        r => r.flavor_id === flavor.id && r.override_extra_wrap,
-      ).length;
-      const waste_pct = imp_used > 0 ? (imp_used_override / imp_used) * 100 : 0;
-
-      return {
-        flavor_id: flavor.id,
-        flavor_name: flavor.name,
-        prefix: flavor.prefix,
-        imp_purchased,
-        imp_used,
-        imp_used_override,
-        rolls_purchased,
-        rolls_with_override,
-        waste_pct,
-      };
-    });
+    // Newest order first
+    result.sort((a, b) => (a.earliest_received < b.earliest_received ? 1 : -1));
+    return result;
   }, [state, from, to]);
 
-  // Totals
-  const totals = useMemo(() => {
-    return rows.reduce(
-      (acc, r) => ({
-        imp_purchased: acc.imp_purchased + r.imp_purchased,
-        imp_used: acc.imp_used + r.imp_used,
-        imp_used_override: acc.imp_used_override + r.imp_used_override,
-        rolls_purchased: acc.rolls_purchased + r.rolls_purchased,
+  // All-orders rollup for the summary cards
+  const grand = useMemo(() => {
+    const init = { imp_purchased: 0, imp_used: 0, imp_used_override: 0, rolls_purchased: 0 };
+    return orders.reduce(
+      (acc, o) => ({
+        imp_purchased: acc.imp_purchased + o.totals.imp_purchased,
+        imp_used: acc.imp_used + o.totals.imp_used,
+        imp_used_override: acc.imp_used_override + o.totals.imp_used_override,
+        rolls_purchased: acc.rolls_purchased + o.totals.rolls_purchased,
       }),
-      { imp_purchased: 0, imp_used: 0, imp_used_override: 0, rolls_purchased: 0 },
+      init,
     );
-  }, [rows]);
-
-  const overallWaste = totals.imp_used > 0 ? (totals.imp_used_override / totals.imp_used) * 100 : 0;
+  }, [orders]);
+  const overallWaste = grand.imp_used > 0 ? (grand.imp_used_override / grand.imp_used) * 100 : 0;
 
   function setPreset(days: number) {
     setFrom(daysAgoISO(days));
@@ -120,7 +187,7 @@ export default function ReportsScreen() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Reports</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Film usage and waste per flavor. Waste = impressions used on rolls flagged as extra wrap.
+            One section per printer order. Tap to expand and see what was purchased and used for that order's rolls.
           </p>
         </div>
         <BarChart3 className="h-6 w-6 text-muted-foreground" />
@@ -157,9 +224,9 @@ export default function ReportsScreen() {
           </div>
           <div className="flex gap-2">
             {[
-              { label: '7d', days: 7 },
               { label: '30d', days: 30 },
               { label: '90d', days: 90 },
+              { label: '180d', days: 180 },
             ].map(p => (
               <button
                 key={p.days}
@@ -175,11 +242,11 @@ export default function ReportsScreen() {
         </div>
       </div>
 
-      {/* Summary cards */}
+      {/* All-orders summary */}
       <div className="mb-6 grid gap-3 md:grid-cols-4">
-        <SummaryCard label="Imp purchased" value={totals.imp_purchased.toLocaleString()} subtitle={`${totals.rolls_purchased} rolls`} />
-        <SummaryCard label="Imp used" value={totals.imp_used.toLocaleString()} />
-        <SummaryCard label="Imp on overrides" value={totals.imp_used_override.toLocaleString()} subtitle="extra-wrap rolls" />
+        <SummaryCard label="Orders in range" value={orders.length.toString()} />
+        <SummaryCard label="Imp purchased" value={grand.imp_purchased.toLocaleString()} subtitle={`${grand.rolls_purchased} rolls`} />
+        <SummaryCard label="Imp used" value={grand.imp_used.toLocaleString()} />
         <SummaryCard
           label="Overall waste"
           value={`${overallWaste.toFixed(1)}%`}
@@ -187,85 +254,160 @@ export default function ReportsScreen() {
         />
       </div>
 
-      {/* Per-flavor table */}
-      <div className="overflow-hidden rounded-xl border border-card-border bg-card">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/40">
-              <tr className="text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                <th className="px-4 py-3">Flavor</th>
-                <th className="px-4 py-3 text-right">Rolls in</th>
-                <th className="px-4 py-3 text-right">Imp purchased</th>
-                <th className="px-4 py-3 text-right">Imp used</th>
-                <th className="px-4 py-3 text-right">Override imp</th>
-                <th className="px-4 py-3 text-right">Waste %</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(r => {
-                const high = r.waste_pct > 5;
-                return (
-                  <tr
-                    key={r.flavor_id}
-                    className={cn('border-t border-border/60', high && 'bg-amber-500/5')}
-                    data-testid={`row-${r.flavor_id}`}
-                  >
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <span className="inline-flex h-6 min-w-[2.5rem] items-center justify-center rounded bg-muted px-1.5 font-mono text-[10px] font-bold uppercase">
-                          {r.prefix}
-                        </span>
-                        <span className="font-medium">{r.flavor_name}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs">
-                      {r.rolls_purchased > 0 ? r.rolls_purchased : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs">
-                      {r.imp_purchased > 0 ? r.imp_purchased.toLocaleString() : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs">
-                      {r.imp_used > 0 ? r.imp_used.toLocaleString() : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-right font-mono text-xs">
-                      {r.imp_used_override > 0 ? (
-                        <span className="text-amber-600 dark:text-amber-400">
-                          {r.imp_used_override.toLocaleString()}
-                        </span>
-                      ) : (
-                        '—'
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      {r.imp_used > 0 ? (
-                        <span
-                          className={cn(
-                            'inline-flex items-center gap-1 font-mono text-xs',
-                            high && 'font-semibold text-amber-600 dark:text-amber-400',
-                          )}
-                        >
-                          {high && <AlertTriangle className="h-3.5 w-3.5" />}
-                          {r.waste_pct.toFixed(1)}%
-                        </span>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      {/* Orders list */}
+      {orders.length === 0 ? (
+        <div className="rounded-xl border border-card-border bg-card p-8 text-center">
+          <Package className="mx-auto h-8 w-8 text-muted-foreground/50" />
+          <p className="mt-3 text-sm font-medium">No orders in this date range</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Adjust the From/To dates above or import a shipment on Receive.
+          </p>
         </div>
-      </div>
+      ) : (
+        <div className="space-y-2">
+          {orders.map(order => {
+            const isOpen = openOrderNo === order.order_no;
+            const high = order.totals.waste_pct > 5;
+            return (
+              <div
+                key={order.order_no}
+                className="overflow-hidden rounded-xl border border-card-border bg-card"
+                data-testid={`order-${order.order_no}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setOpenOrderNo(prev => (prev === order.order_no ? null : order.order_no))}
+                  className="hover-elevate active-elevate-2 flex w-full items-center gap-3 px-4 py-3 text-left"
+                  data-testid={`order-toggle-${order.order_no}`}
+                >
+                  {isOpen ? (
+                    <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-sm font-semibold">Order {order.order_no}</span>
+                      <span className="text-[11px] text-muted-foreground">
+                        received {fmtDate(order.earliest_received)}
+                      </span>
+                      {high && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:text-amber-400">
+                          <AlertTriangle className="h-3 w-3" />
+                          {order.totals.waste_pct.toFixed(1)}% waste
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[11px] font-mono text-muted-foreground">
+                      {order.flavors.length} flavor{order.flavors.length === 1 ? '' : 's'}
+                      <span className="mx-1.5">·</span>
+                      {order.totals.rolls_purchased} rolls
+                      <span className="mx-1.5">·</span>
+                      {order.totals.imp_purchased.toLocaleString()} imp
+                    </p>
+                  </div>
+                </button>
+
+                {isOpen && (
+                  <div className="border-t border-card-border bg-background/40">
+                    {/* Per-flavor breakdown */}
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead className="bg-muted/40">
+                          <tr className="text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                            <th className="px-4 py-3">Flavor</th>
+                            <th className="px-4 py-3 text-right">Rolls</th>
+                            <th className="px-4 py-3 text-right">Imp purchased</th>
+                            <th className="px-4 py-3 text-right">Imp used</th>
+                            <th className="px-4 py-3 text-right">Override imp</th>
+                            <th className="px-4 py-3 text-right">Waste %</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {order.flavors.map(f => {
+                            const fhigh = f.waste_pct > 5;
+                            return (
+                              <tr
+                                key={f.flavor_id}
+                                className={cn('border-t border-border/60', fhigh && 'bg-amber-500/5')}
+                                data-testid={`order-${order.order_no}-flavor-${f.flavor_id}`}
+                              >
+                                <td className="px-4 py-3">
+                                  <div className="flex items-center gap-2">
+                                    <span className="inline-flex h-6 min-w-[2.5rem] items-center justify-center rounded bg-muted px-1.5 font-mono text-[10px] font-bold uppercase">
+                                      {f.prefix}
+                                    </span>
+                                    <span className="font-medium">{f.flavor_name}</span>
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3 text-right font-mono text-xs">
+                                  {f.rolls_purchased > 0 ? f.rolls_purchased : '·'}
+                                </td>
+                                <td className="px-4 py-3 text-right font-mono text-xs">
+                                  {f.imp_purchased > 0 ? f.imp_purchased.toLocaleString() : '·'}
+                                </td>
+                                <td className="px-4 py-3 text-right font-mono text-xs">
+                                  {f.imp_used > 0 ? f.imp_used.toLocaleString() : '·'}
+                                </td>
+                                <td className="px-4 py-3 text-right font-mono text-xs">
+                                  {f.imp_used_override > 0 ? (
+                                    <span className="text-amber-600 dark:text-amber-400">
+                                      {f.imp_used_override.toLocaleString()}
+                                    </span>
+                                  ) : (
+                                    '·'
+                                  )}
+                                </td>
+                                <td className="px-4 py-3 text-right">
+                                  {f.imp_used > 0 ? (
+                                    <span
+                                      className={cn(
+                                        'inline-flex items-center gap-1 font-mono text-xs',
+                                        fhigh && 'font-semibold text-amber-600 dark:text-amber-400',
+                                      )}
+                                    >
+                                      {fhigh && <AlertTriangle className="h-3.5 w-3.5" />}
+                                      {f.waste_pct.toFixed(1)}%
+                                    </span>
+                                  ) : (
+                                    <span className="text-xs text-muted-foreground">·</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                        <tfoot className="bg-muted/30">
+                          <tr className="border-t border-border/60 text-xs font-semibold">
+                            <td className="px-4 py-3">Order total</td>
+                            <td className="px-4 py-3 text-right font-mono">{order.totals.rolls_purchased}</td>
+                            <td className="px-4 py-3 text-right font-mono">{order.totals.imp_purchased.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right font-mono">{order.totals.imp_used.toLocaleString()}</td>
+                            <td className="px-4 py-3 text-right font-mono">
+                              {order.totals.imp_used_override > 0
+                                ? order.totals.imp_used_override.toLocaleString()
+                                : '·'}
+                            </td>
+                            <td className="px-4 py-3 text-right font-mono">
+                              {order.totals.imp_used > 0 ? `${order.totals.waste_pct.toFixed(1)}%` : '·'}
+                            </td>
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       <p className="mt-4 text-xs text-muted-foreground">
-        Waste threshold: 5%. Rows above the threshold are highlighted. Override flag is set on Inventory when extra wrap pushes a roll past nominal capacity.
+        Waste = impressions used on rolls flagged as extra wrap. Threshold 5%. Numbers are scoped to the rolls received under each order_no, so each order tracks independently.
       </p>
 
       <RecallTrace />
-
-      <DangerZone />
     </div>
   );
 }
@@ -278,7 +420,6 @@ function RecallTrace() {
   const { state } = useStore();
   const [openPlanId, setOpenPlanId] = useState<string | null>(null);
 
-  // Sort plans newest first.
   const plans = useMemo(() => {
     return [...state.plans].sort(
       (a, b) => new Date(b.week_of).getTime() - new Date(a.week_of).getTime(),
@@ -365,7 +506,6 @@ function RecallTrace() {
 
               {isOpen && (
                 <div className="border-t border-card-border bg-background/40 px-4 py-3 space-y-4">
-                  {/* Rolls staged against this plan */}
                   <div>
                     <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                       Rolls tagged to this run ({planRolls.length})
@@ -391,7 +531,7 @@ function RecallTrace() {
                                 </span>
                               </div>
                               <div className="font-mono text-[11px] text-muted-foreground">
-                                {r.order_no ?? '—'} · #{r.roll_no}
+                                {r.order_no ?? '·'} · #{r.roll_no}
                               </div>
                             </div>
                           );
@@ -400,7 +540,6 @@ function RecallTrace() {
                     )}
                   </div>
 
-                  {/* Usage events tagged to this plan */}
                   <div>
                     <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                       Usage events ({planUsage.length})
@@ -445,58 +584,6 @@ function RecallTrace() {
           );
         })}
       </div>
-    </section>
-  );
-}
-
-// Admin-only wipe button. Hidden for kitchen role. Confirms twice with
-// `confirm()` so a butterfinger can't nuke the database.
-function DangerZone() {
-  const { user } = useAuth();
-  const { actions } = useStore();
-  const { toast } = useToast();
-  const [busy, setBusy] = useState(false);
-  if (user?.role !== 'admin') return null;
-
-  async function wipe() {
-    if (!window.confirm('Wipe ALL rolls, pools, shipments, plans, usage events, and photos? Flavors and users stay. This cannot be undone.')) return;
-    if (!window.confirm('Really wipe? Type cancel in the next prompt to abort.')) return;
-    const tag = window.prompt('Type WIPE to confirm.');
-    if (tag !== 'WIPE') {
-      toast({ title: 'Wipe cancelled' });
-      return;
-    }
-    setBusy(true);
-    try {
-      await actions.wipeData();
-      toast({ title: 'Database wiped', description: 'All operational data cleared.' });
-    } catch (err: any) {
-      toast({
-        title: 'Wipe failed',
-        description: err?.message ?? String(err),
-        variant: 'destructive',
-      });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section className="mt-10 rounded-xl border border-destructive/40 bg-destructive/5 p-4">
-      <h3 className="text-sm font-semibold text-destructive">Danger zone</h3>
-      <p className="mt-1 text-xs text-muted-foreground">
-        Wipes every roll, shipment, pool, plan, usage event, and photo. Keeps users and flavors. Use during pilot to scrap test runs.
-      </p>
-      <button
-        type="button"
-        onClick={wipe}
-        disabled={busy}
-        className="hover-elevate active-elevate-2 mt-3 inline-flex h-10 items-center justify-center gap-2 rounded-md border border-destructive bg-destructive px-4 text-xs font-semibold text-destructive-foreground disabled:opacity-50"
-        data-testid="button-wipe"
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-        {busy ? 'Wiping...' : 'Wipe operational data'}
-      </button>
     </section>
   );
 }

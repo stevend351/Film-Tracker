@@ -22,14 +22,13 @@ const NAV: NavItem[] = [
   { href: '/photos',   label: 'Photos',    icon: Camera },
 ];
 
-// Desktop top bar adds Plan + Reports + Orders.
+// Desktop top bar adds Plan + Reports.
 const DESKTOP_NAV: NavItem[] = [
   { href: '/',         label: 'Inventory', icon: Boxes },
   { href: '/log',      label: 'Log',       icon: ClipboardList },
   { href: '/plan',     label: 'Plan',      icon: Calendar },
   { href: '/transfer', label: 'Stage',     icon: ArrowRightLeft },
   { href: '/receive',  label: 'Receive',   icon: Package },
-  { href: '/orders',   label: 'Orders',    icon: ShoppingCart },
   { href: '/photos',   label: 'Photos',    icon: Camera },
   { href: '/reports',  label: 'Reports',   icon: BarChart3 },
 ];
@@ -157,7 +156,7 @@ function RunwayBanner() {
   const top = [...triggered].sort((a, b) => a.weeks - b.weeks).slice(0, 3);
   return (
     <Link
-      href="/orders"
+      href="/"
       className="flex items-center gap-2 border-t border-amber-500/30 bg-amber-500/10 px-4 py-2 text-amber-200 hover:bg-amber-500/15"
       data-testid="banner-runway-alert"
     >
