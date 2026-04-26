@@ -36,6 +36,24 @@ export async function ensureSchema(): Promise<void> {
   await sql`ALTER TABLE rolls ADD COLUMN IF NOT EXISTS production_plan_id TEXT`;
   await sql`ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS production_plan_id TEXT`;
 
+  // Backfill: when this migration first runs against an existing database,
+  // every prior plan got status='LOCKED' from the column default. That
+  // breaks the single-LOCKED invariant before we can even install it.
+  // Treat older plans as historical/finished and keep only the newest one
+  // active. This runs idempotently on every boot but is a no-op once at
+  // most one row remains LOCKED.
+  await sql`
+    UPDATE production_plans
+    SET status = 'FINISHED',
+        finished_at = COALESCE(finished_at, NOW())
+    WHERE id IN (
+      SELECT id FROM production_plans
+      WHERE status = 'LOCKED'
+      ORDER BY production_date DESC, id DESC
+      OFFSET 1
+    )
+  `;
+
   // At most one LOCKED plan at a time. Partial unique index keeps the
   // database honest, even if the API misses a check.
   await sql`
