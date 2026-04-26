@@ -321,19 +321,56 @@ export function rollAge(roll: Roll, plans: ProductionPlan[]): RollAge {
 }
 
 // ---------------------------------------------------------------------------
-// Order projector. Per-flavor weekly burn rate (manual) drives runway and
-// suggested order qty. Available impressions = warehouse + kitchen non-DEPLETED
-// non-OFFLINE rolls. Trigger when runway drops below 4 weeks (3wk lead +
-// 1wk safety). Min order is 150k impressions.
+// Order projector. Weekly burn rate auto-computed from the last 4 weeks of
+// usage_events per flavor. Falls back to the saved burnRates row when no
+// usage history exists yet. Available impressions = warehouse + kitchen
+// non-DEPLETED non-OFFLINE rolls. Trigger when runway drops below 4 weeks
+// (3wk lead + 1wk safety). Min order is 150k impressions.
 // ---------------------------------------------------------------------------
+export type BurnRateSource = 'usage' | 'manual' | 'none';
+
 export interface FlavorRunway {
   flavor: Flavor;
-  weekly_imp: number;             // 0 if no rate set yet
+  weekly_imp: number;             // 0 if no usage history and no manual rate
+  burn_source: BurnRateSource;    // where weekly_imp came from
   available_imp: number;          // warehouse + kitchen on-hand
   weeks: number;                  // runway in weeks (Infinity if weekly_imp=0)
   stockout_date: string | null;   // ISO date or null
+  order_by_date: string | null;   // stockout_date minus 4-week lead, ISO date
   suggested_qty: number;          // rounded up to 50k
+  rolls_needed: number;           // suggested_qty / impressions_per_roll, rounded up
+  impressions_per_roll: number;   // most recent received roll size for this flavor
+  weeks_of_supply: number;        // suggested_qty / weekly_imp
   triggers: boolean;              // weeks < 4 AND weekly_imp > 0
+}
+
+// Most recent impressions_per_roll the supplier shipped for each flavor. Picks
+// the latest by shipment received_at; falls back to 0 if no pool yet.
+function latestRollSize(state: State, flavor_id: string): number {
+  const pools = state.pools.filter(p => p.flavor_id === flavor_id);
+  if (pools.length === 0) return 0;
+  const shipmentDate = (sid: string) => {
+    const s = state.shipments.find(x => x.id === sid);
+    return s ? new Date(s.received_at).getTime() : 0;
+  };
+  const sorted = [...pools].sort((a, b) => shipmentDate(b.shipment_id) - shipmentDate(a.shipment_id));
+  return sorted[0]?.impressions_per_roll ?? 0;
+}
+
+// Last 4 weeks of usage_events grouped per flavor, expressed as imp/week.
+// Walks usage events, joins to roll to find flavor. 4 weeks = 28 days.
+function usageBurnRate(state: State, flavor_id: string, today: Date): number {
+  const cutoffMs = today.getTime() - 28 * 24 * 60 * 60 * 1000;
+  const rollFlavor = new Map<string, string>();
+  for (const r of state.rolls) rollFlavor.set(r.id, r.flavor_id);
+  let total = 0;
+  for (const u of state.usage) {
+    if (rollFlavor.get(u.roll_id) !== flavor_id) continue;
+    const ts = new Date(u.created_at).getTime();
+    if (ts < cutoffMs) continue;
+    total += u.impressions_used;
+  }
+  return Math.round(total / 4);
 }
 
 export function flavorRunway(state: State): FlavorRunway[] {
@@ -344,21 +381,51 @@ export function flavorRunway(state: State): FlavorRunway[] {
     const kitchen_imp = inv_for?.kitchen_remaining ?? 0;
     const warehouse_imp = inv_for?.warehouse_impressions_remaining ?? 0;
     const available_imp = kitchen_imp + warehouse_imp;
-    const rate = state.burnRates.find(b => b.flavor_id === flavor.id);
-    const weekly_imp = rate?.weekly_imp ?? 0;
+    const auto_imp = usageBurnRate(state, flavor.id, today);
+    const manual = state.burnRates.find(b => b.flavor_id === flavor.id)?.weekly_imp ?? 0;
+    let weekly_imp = 0;
+    let burn_source: BurnRateSource = 'none';
+    if (auto_imp > 0) {
+      weekly_imp = auto_imp;
+      burn_source = 'usage';
+    } else if (manual > 0) {
+      weekly_imp = manual;
+      burn_source = 'manual';
+    }
     let weeks = Infinity;
     let stockout_date: string | null = null;
+    let order_by_date: string | null = null;
     if (weekly_imp > 0) {
       weeks = available_imp / weekly_imp;
-      const ms = today.getTime() + weeks * 7 * 24 * 60 * 60 * 1000;
-      stockout_date = new Date(ms).toISOString().slice(0, 10);
+      const stockoutMs = today.getTime() + weeks * 7 * 24 * 60 * 60 * 1000;
+      stockout_date = new Date(stockoutMs).toISOString().slice(0, 10);
+      // 4 weeks before stockout. If already past, returns a date in the past which
+      // signals 'order now'.
+      const orderByMs = stockoutMs - 28 * 24 * 60 * 60 * 1000;
+      order_by_date = new Date(orderByMs).toISOString().slice(0, 10);
     }
     // 8 weeks = 2 months target stock. Min order 150k. Round up to nearest 50k.
     const target = weekly_imp * 8;
     const raw = Math.max(150_000, target);
     const suggested_qty = Math.ceil(raw / 50_000) * 50_000;
+    const impressions_per_roll = latestRollSize(state, flavor.id);
+    const rolls_needed = impressions_per_roll > 0 ? Math.ceil(suggested_qty / impressions_per_roll) : 0;
+    const weeks_of_supply = weekly_imp > 0 ? suggested_qty / weekly_imp : 0;
     const triggers = weekly_imp > 0 && weeks < 4;
-    return { flavor, weekly_imp, available_imp, weeks, stockout_date, suggested_qty, triggers };
+    return {
+      flavor,
+      weekly_imp,
+      burn_source,
+      available_imp,
+      weeks,
+      stockout_date,
+      order_by_date,
+      suggested_qty,
+      rolls_needed,
+      impressions_per_roll,
+      weeks_of_supply,
+      triggers,
+    };
   });
 }
 

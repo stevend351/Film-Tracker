@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
 import { PhotoZoom } from '@/components/PhotoZoom';
+import { AtRiskSection } from '@/components/AtRiskSection';
 
 // Latest photo per roll, preferring USAGE > STAGED.
 function latestPhotoByRoll(photos: KitchenPhoto[]): Map<string, KitchenPhoto> {
@@ -141,6 +142,10 @@ export default function InventoryScreen() {
           </div>
         )}
       </Section>
+
+      <div className="h-4" />
+
+      <AtRiskSection />
 
       {zoomPhoto && (
         <PhotoZoom photo={zoomPhoto} onClose={() => setZoomPhoto(null)} />
