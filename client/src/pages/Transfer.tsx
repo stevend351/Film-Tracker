@@ -173,7 +173,16 @@ function PlanGapView({
           </p>
           <button
             type="button"
-            onClick={() => setLocation('/transfer')}
+            onClick={() => {
+              // wouter's hash router only replaces the hash; the ?just=...
+              // query lives on location.search and survives setLocation. Strip
+              // it directly so the gap view shows every plan row again.
+              const url = new URL(window.location.href);
+              url.search = '';
+              window.history.replaceState({}, '', url.toString());
+              // Force a re-render. wouter subscribes to popstate.
+              window.dispatchEvent(new PopStateEvent('popstate'));
+            }}
             className="hover-elevate active-elevate-2 inline-flex h-7 items-center rounded-sm border border-sky-500/40 bg-card px-2 text-[11px] font-semibold text-sky-700 dark:text-sky-300"
             data-testid="button-show-all-gaps"
           >
