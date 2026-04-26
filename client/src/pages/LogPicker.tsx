@@ -120,7 +120,7 @@ export default function LogPickerScreen() {
               Active production run
             </p>
             <span className="text-[11px] font-mono text-muted-foreground">
-              {new Date(active.production_date).toLocaleDateString()}
+              {new Date(active.week_of).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
             </span>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
