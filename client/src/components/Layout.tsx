@@ -2,6 +2,7 @@ import { type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
 import { Package, Calendar, ArrowRightLeft, Boxes, Camera, BarChart3, ClipboardList } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useStore, activePlan } from '@/store/store';
 
 interface NavItem {
   href: string;
@@ -44,6 +45,10 @@ export function Layout({ children }: { children: ReactNode }) {
 
 function SyncBanner() {
   const [location] = useLocation();
+  const { state } = useStore();
+  const plan = activePlan(state);
+  const planDate = plan ? fmtBannerDate(plan.week_of) : null;
+
   return (
     <div className="safe-top sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-md">
       <div className="flex items-center justify-between gap-4 px-4 py-2.5">
@@ -80,13 +85,31 @@ function SyncBanner() {
           })}
         </nav>
 
-        {/* Phone: just the title, right side */}
-        <span className="text-xs font-semibold tracking-wide text-foreground md:hidden">
-          Film Tracker
-        </span>
+        <div className="flex items-center gap-2">
+          {planDate && (
+            <span
+              className="inline-flex h-6 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 text-[10px] font-semibold uppercase tracking-wider text-primary"
+              data-testid="chip-production-date"
+              title="Active production date"
+            >
+              <Calendar className="h-3 w-3" />
+              <span className="font-mono normal-case">{planDate}</span>
+            </span>
+          )}
+          {/* Phone: just the title, right side */}
+          <span className="text-xs font-semibold tracking-wide text-foreground md:hidden">
+            Film Tracker
+          </span>
+        </div>
       </div>
     </div>
   );
+}
+
+function fmtBannerDate(s: string): string {
+  const d = s.length === 10 ? new Date(`${s}T00:00:00`) : new Date(s);
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 function BottomNav() {

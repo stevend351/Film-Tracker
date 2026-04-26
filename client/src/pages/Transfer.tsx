@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useLocation } from 'wouter';
+import { useLocation, useSearch } from 'wouter';
 import { CheckCircle2, ChevronRight, ArrowLeft, PartyPopper, Trash2, AlertTriangle } from 'lucide-react';
 import {
   useStore,
@@ -40,10 +40,25 @@ type FocusKey = { flavorId: string; poolId: string };
 
 export default function TransferScreen() {
   const { state } = useStore();
-  const gaps = useMemo(() => computePlanGaps(state), [state]);
+  const search = useSearch();
+  const allGaps = useMemo(() => computePlanGaps(state), [state]);
   const needed = useMemo(() => computeStillNeeded(state), [state]);
   const active = activePlan(state);
   const hasPlan = !!active;
+
+  // ?just=flavorId1,flavorId2 - filter the gap view to just those flavors.
+  // Set after Brenda extends the plan so she only sees what was just added.
+  const justIds = useMemo(() => {
+    const params = new URLSearchParams(search);
+    const raw = params.get('just');
+    if (!raw) return null;
+    return new Set(raw.split(',').filter(Boolean));
+  }, [search]);
+
+  const gaps = useMemo(() => {
+    if (!justIds) return allGaps;
+    return allGaps.filter(g => justIds.has(g.flavor.id));
+  }, [allGaps, justIds]);
 
   const [focus, setFocus] = useState<FocusKey | null>(null);
 
@@ -71,6 +86,8 @@ export default function TransferScreen() {
         gaps={gaps}
         productionDate={active.week_of}
         onPickLine={(flavorId, poolId) => setFocus({ flavorId, poolId })}
+        justAddedActive={!!justIds}
+        totalCount={allGaps.length}
       />
     );
   }
@@ -116,11 +133,16 @@ function PlanGapView({
   gaps,
   productionDate,
   onPickLine,
+  justAddedActive,
+  totalCount,
 }: {
   gaps: PlanGap[];
   productionDate: string;
   onPickLine: (flavorId: string, poolId: string) => void;
+  justAddedActive: boolean;
+  totalCount: number;
 }) {
+  const [, setLocation] = useLocation();
   const totalToPull = gaps.reduce(
     (s, g) => s + g.picks.reduce((ss, p) => ss + p.rolls_to_pull, 0),
     0,
@@ -134,6 +156,26 @@ function PlanGapView({
           For production date <span className="font-mono">{fmtDate(productionDate)}</span>.
         </p>
       </header>
+
+      {justAddedActive && (
+        <section
+          className="mb-4 rounded-xl border border-sky-500/40 bg-sky-500/10 px-3 py-2.5 flex items-center justify-between gap-2"
+          data-testid="banner-just-added"
+        >
+          <p className="text-xs text-sky-700 dark:text-sky-300">
+            Showing <span className="font-semibold">{gaps.length}</span> just-added
+            {gaps.length === 1 ? ' flavor' : ' flavors'}. Other plan items are hidden.
+          </p>
+          <button
+            type="button"
+            onClick={() => setLocation('/transfer')}
+            className="hover-elevate active-elevate-2 inline-flex h-7 items-center rounded-sm border border-sky-500/40 bg-card px-2 text-[11px] font-semibold text-sky-700 dark:text-sky-300"
+            data-testid="button-show-all-gaps"
+          >
+            Show all {totalCount}
+          </button>
+        </section>
+      )}
 
       <section className="mb-4 rounded-xl border border-card-border bg-card p-3">
         <div className="flex items-baseline justify-between">
@@ -149,7 +191,7 @@ function PlanGapView({
         </p>
       </section>
 
-      <div className="space-y-3">
+      <div className="space-y-5">
         {gaps.map(gap => (
           <FlavorGapCard key={gap.flavor.id} gap={gap} onPickPool={onPickLine} />
         ))}
@@ -171,14 +213,31 @@ function FlavorGapCard({
   const covered = gap.gap_imp === 0;
   const short = gap.short_imp > 0;
 
+  // Status-driven left bar + card border. Red = deficit to close, green = covered.
+  const cardBorder = covered
+    ? 'border-emerald-500/50'
+    : 'border-rose-500/60';
+  const statusBar = covered
+    ? 'before:bg-emerald-500'
+    : 'before:bg-rose-500';
+
   return (
-    <section className="rounded-xl border border-card-border bg-card p-3">
+    <section
+      className={cn(
+        'relative overflow-hidden rounded-xl border-2 bg-card p-4 shadow-sm',
+        'before:absolute before:inset-y-0 before:left-0 before:w-1.5',
+        cardBorder,
+        statusBar,
+      )}
+      data-testid={`flavor-card-${gap.flavor.slug}`}
+      data-status={covered ? 'covered' : 'gap'}
+    >
       {/* Header */}
-      <div className="flex items-baseline justify-between gap-2">
+      <div className="flex items-baseline justify-between gap-2 pl-2">
         <h2 className="text-base font-semibold tracking-tight">{gap.flavor.name}</h2>
         <span className="font-mono text-[10px] text-muted-foreground">{gap.flavor.prefix}</span>
       </div>
-      <p className="mt-0.5 text-[11px] font-mono text-muted-foreground">
+      <p className="mt-0.5 pl-2 text-[11px] font-mono text-muted-foreground">
         Needed: <span className="font-semibold text-foreground">{gap.needed_imp.toLocaleString()} imp</span>
       </p>
 
@@ -215,12 +274,16 @@ function FlavorGapCard({
       )}
 
       {!covered && (
-        <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
-          <div className="flex items-baseline justify-between">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-amber-700 dark:text-amber-400">
-              Gap
+        <div
+          className="mt-3 rounded-md border-2 border-rose-500/60 bg-rose-500/10 px-3 py-2"
+          data-testid={`gap-warning-${gap.flavor.slug}`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <p className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-rose-700 dark:text-rose-400">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Gap to close
             </p>
-            <span className="font-mono text-xs font-semibold text-amber-700 dark:text-amber-400">
+            <span className="font-mono text-sm font-bold text-rose-700 dark:text-rose-400">
               {gap.gap_imp.toLocaleString()} imp short
             </span>
           </div>

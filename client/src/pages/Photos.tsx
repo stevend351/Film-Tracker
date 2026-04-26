@@ -1,9 +1,7 @@
-import { useRef, useState, useMemo } from 'react';
-import { Camera, X, MapPin, Tag } from 'lucide-react';
+import { useState, useMemo } from 'react';
+import { Camera, X } from 'lucide-react';
 import { useStore } from '@/store/store';
 import type { KitchenPhoto, Location, PhotoKind } from '@/store/types';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 
 // ISO Monday for a given Date (UTC). Used to find this week's saved plan.
@@ -16,6 +14,12 @@ function isoMonday(d: Date): string {
 
 function dayKey(iso: string): string {
   return iso.slice(0, 10); // YYYY-MM-DD
+}
+
+function fmtPlanDate(iso: string): string {
+  const d = iso.length === 10 ? new Date(`${iso}T00:00:00`) : new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function formatDayHeader(iso: string): string {
@@ -35,82 +39,46 @@ function formatTime(iso: string): string {
 
 type LocationFilter = 'ALL' | Location;
 type KindFilter = 'ALL' | PhotoKind;
-
-interface CaptureDraft {
-  data_url: string;
-  location: Location;
-  caption: string;
-  flavor_ids: string[];
-}
+type PlanFilter = 'ALL' | string; // plan_id or 'ALL'
 
 export default function PhotosScreen() {
-  const { state, actions } = useStore();
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [draft, setDraft] = useState<CaptureDraft | null>(null);
+  const { state } = useStore();
   const [viewing, setViewing] = useState<KitchenPhoto | null>(null);
   const [filter, setFilter] = useState<LocationFilter>('ALL');
   const [kindFilter, setKindFilter] = useState<KindFilter>('ALL');
+  const [planFilter, setPlanFilter] = useState<PlanFilter>('ALL');
 
-  // Find this week's plan (if any) so we can auto-suggest the caption + flavor tags.
-  const activePlan = useMemo(() => {
-    const monday = isoMonday(new Date());
-    return state.plans.find(p => p.week_of === monday);
-  }, [state.plans]);
+  // roll_id -> production_plan_id, for matching photos to plans via their rolls.
+  const rollPlanById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const r of state.rolls) {
+      if (r.production_plan_id) m.set(r.id, r.production_plan_id);
+    }
+    return m;
+  }, [state.rolls]);
 
-  const planFlavorNames = useMemo(() => {
-    if (!activePlan) return [] as { id: string; name: string }[];
-    return activePlan.rows
-      .map(r => state.flavors.find(f => f.id === r.flavor_id))
-      .filter((f): f is NonNullable<typeof f> => Boolean(f))
-      .map(f => ({ id: f.id, name: f.name }));
-  }, [activePlan, state.flavors]);
-
-  function handleFile(file: File) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const data_url = reader.result as string;
-      // Auto-suggest caption from active plan.
-      const today = new Date();
-      const dayLabel = today.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-      const flavorPart = planFlavorNames.length > 0
-        ? planFlavorNames.map(f => f.name).join(', ')
-        : '';
-      const caption = flavorPart ? `${flavorPart} · ${dayLabel}` : dayLabel;
-      setDraft({
-        data_url,
-        location: 'KITCHEN',
-        caption,
-        flavor_ids: planFlavorNames.map(f => f.id),
-      });
-    };
-    reader.readAsDataURL(file);
-  }
-
-  function saveDraft() {
-    if (!draft) return;
-    actions.addPhoto(draft.data_url, {
-      location: draft.location,
-      caption: draft.caption.trim() || undefined,
-      flavor_ids: draft.flavor_ids.length > 0 ? draft.flavor_ids : undefined,
-    });
-    setDraft(null);
-  }
-
-  function toggleFlavor(id: string) {
-    if (!draft) return;
-    setDraft({
-      ...draft,
-      flavor_ids: draft.flavor_ids.includes(id)
-        ? draft.flavor_ids.filter(x => x !== id)
-        : [...draft.flavor_ids, id],
-    });
-  }
+  // Plans referenced by at least one photo (via roll). Sorted newest first.
+  const plansWithPhotos = useMemo(() => {
+    const planIds = new Set<string>();
+    for (const p of state.photos) {
+      if (!p.roll_id) continue;
+      const pid = rollPlanById.get(p.roll_id);
+      if (pid) planIds.add(pid);
+    }
+    return state.plans
+      .filter(pl => planIds.has(pl.id))
+      .sort((a, b) => (a.week_of < b.week_of ? 1 : -1));
+  }, [state.photos, state.plans, rollPlanById]);
 
   // Filtered + grouped photos for library view.
   const grouped = useMemo(() => {
     const filtered = state.photos.filter(p => {
       if (filter !== 'ALL' && p.location !== filter) return false;
       if (kindFilter !== 'ALL' && (p.kind ?? null) !== kindFilter) return false;
+      if (planFilter !== 'ALL') {
+        if (!p.roll_id) return false;
+        if (rollPlanById.get(p.roll_id) !== planFilter) return false;
+      }
       return true;
     });
     const map = new Map<string, KitchenPhoto[]>();
@@ -119,22 +87,17 @@ export default function PhotosScreen() {
       if (!map.has(k)) map.set(k, []);
       map.get(k)!.push(p);
     }
-    // sort each day newest-first, and entries by day desc
     return Array.from(map.entries())
       .sort((a, b) => (a[0] < b[0] ? 1 : -1))
       .map(([day, items]) => ({
         day,
         items: items.sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1)),
       }));
-  }, [state.photos, filter, kindFilter]);
+  }, [state.photos, filter, kindFilter, planFilter, rollPlanById]);
 
   const filteredCount = useMemo(
-    () => state.photos.filter(p => {
-      if (filter !== 'ALL' && p.location !== filter) return false;
-      if (kindFilter !== 'ALL' && (p.kind ?? null) !== kindFilter) return false;
-      return true;
-    }).length,
-    [state.photos, filter, kindFilter],
+    () => grouped.reduce((s, g) => s + g.items.length, 0),
+    [grouped],
   );
 
   const rollById = useMemo(() => {
@@ -155,118 +118,8 @@ export default function PhotosScreen() {
     return m;
   }, [state.flavors]);
 
-  // ── CAPTURE / EDIT DRAFT VIEW ─────────────────────────────────────
-  if (draft) {
-    return (
-      <div className="px-4 py-4 pb-32">
-        <header className="mb-4">
-          <h1 className="text-xl font-semibold tracking-tight">New photo</h1>
-          <p className="text-xs text-muted-foreground">Tag location and flavors before saving.</p>
-        </header>
-
-        <div className="mb-4 overflow-hidden rounded-xl border border-border bg-card">
-          <img src={draft.data_url} alt="" className="w-full object-contain max-h-[360px]" />
-        </div>
-
-        {/* Location toggle */}
-        <div className="mb-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Location</p>
-          <div className="grid grid-cols-2 gap-2">
-            {(['KITCHEN', 'WAREHOUSE'] as Location[]).map(loc => (
-              <button
-                key={loc}
-                type="button"
-                onClick={() => setDraft({ ...draft, location: loc })}
-                className={cn(
-                  'hover-elevate active-elevate-2 inline-flex h-12 items-center justify-center gap-2 rounded-md border text-sm font-semibold',
-                  draft.location === loc
-                    ? 'border-primary-border bg-primary text-primary-foreground'
-                    : 'border-border bg-background text-foreground',
-                )}
-                data-testid={`button-loc-${loc.toLowerCase()}`}
-              >
-                <MapPin className="h-4 w-4" />
-                {loc === 'KITCHEN' ? 'Kitchen' : 'Warehouse'}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Caption */}
-        <div className="mb-4">
-          <Label htmlFor="caption" className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Caption
-          </Label>
-          <Input
-            id="caption"
-            value={draft.caption}
-            onChange={e => setDraft({ ...draft, caption: e.target.value })}
-            placeholder="What's in the frame?"
-            className="mt-2 h-11"
-            data-testid="input-caption"
-          />
-          {activePlan && planFlavorNames.length > 0 && (
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              Pre-filled from this week's plan.
-            </p>
-          )}
-        </div>
-
-        {/* Flavor tags */}
-        {state.flavors.length > 0 && (
-          <div className="mb-5">
-            <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Flavors in photo
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {state.flavors.map(f => {
-                const on = draft.flavor_ids.includes(f.id);
-                return (
-                  <button
-                    key={f.id}
-                    type="button"
-                    onClick={() => toggleFlavor(f.id)}
-                    className={cn(
-                      'hover-elevate active-elevate-2 inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-medium',
-                      on
-                        ? 'border-primary-border bg-primary text-primary-foreground'
-                        : 'border-border bg-background text-muted-foreground',
-                    )}
-                    data-testid={`chip-flavor-${f.id}`}
-                  >
-                    {on && <Tag className="h-3 w-3" />}
-                    {f.name}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => setDraft(null)}
-            className="hover-elevate active-elevate-2 inline-flex h-11 flex-1 items-center justify-center rounded-md border border-border bg-background text-sm font-medium"
-            data-testid="button-cancel-photo"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={saveDraft}
-            className="hover-elevate active-elevate-2 inline-flex h-11 flex-[2] items-center justify-center rounded-md border border-primary-border bg-primary text-sm font-semibold text-primary-foreground"
-            data-testid="button-save-photo"
-          >
-            Save photo
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── LIBRARY VIEW ──────────────────────────────────────────────────
   return (
+
     <div className="px-4 py-4 pb-32">
       <header className="mb-4">
         <h1 className="text-xl font-semibold tracking-tight">Photos</h1>
@@ -275,27 +128,48 @@ export default function PhotosScreen() {
         </p>
       </header>
 
-      <button
-        type="button"
-        onClick={() => inputRef.current?.click()}
-        className="hover-elevate active-elevate-2 mb-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md border border-primary-border bg-primary text-sm font-semibold text-primary-foreground"
-        data-testid="button-take-photo"
-      >
-        <Camera className="h-4 w-4" />
-        Take photo
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={e => {
-          const f = e.target.files?.[0];
-          if (f) handleFile(f);
-          e.target.value = '';
-        }}
-      />
+      {/* Production-date filter - so Brenda can verify what's at kitchen for a specific run. */}
+      {plansWithPhotos.length > 0 && (
+        <div className="mb-3">
+          <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Production date
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              type="button"
+              onClick={() => setPlanFilter('ALL')}
+              className={cn(
+                'hover-elevate active-elevate-2 inline-flex h-8 items-center rounded-full border px-3 text-xs font-medium',
+                planFilter === 'ALL'
+                  ? 'border-primary-border bg-primary text-primary-foreground'
+                  : 'border-border bg-background text-muted-foreground',
+              )}
+              data-testid="filter-plan-all"
+            >
+              All dates
+            </button>
+            {plansWithPhotos.map(pl => (
+              <button
+                key={pl.id}
+                type="button"
+                onClick={() => setPlanFilter(pl.id)}
+                className={cn(
+                  'hover-elevate active-elevate-2 inline-flex h-8 items-center rounded-full border px-3 text-xs font-medium',
+                  planFilter === pl.id
+                    ? 'border-primary-border bg-primary text-primary-foreground'
+                    : 'border-border bg-background text-muted-foreground',
+                )}
+                data-testid={`filter-plan-${pl.week_of}`}
+              >
+                <span className="font-mono">{fmtPlanDate(pl.week_of)}</span>
+                {pl.status === 'FINISHED' && (
+                  <span className="ml-1.5 text-[9px] opacity-70">done</span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Kind filter (Staged vs In use) */}
       <div className="mb-2 flex gap-2">

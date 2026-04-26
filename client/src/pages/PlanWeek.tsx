@@ -219,9 +219,12 @@ function ActiveRunView({
           plan={plan}
           inv={inv}
           onClose={() => setAdding(false)}
-          onAdded={() => {
+          onAdded={(addedFlavorIds) => {
             setAdding(false);
-            setLocation('/transfer');
+            const qs = addedFlavorIds.length > 0
+              ? '?just=' + addedFlavorIds.join(',')
+              : '';
+            setLocation('/transfer' + qs);
           }}
         />
       )}
@@ -242,7 +245,7 @@ function ExtendPlanSheet({
   plan: ProductionPlan;
   inv: ReturnType<typeof flavorInventory>;
   onClose: () => void;
-  onAdded: () => void;
+  onAdded: (addedFlavorIds: string[]) => void;
 }) {
   const { state, actions } = useStore();
   const { toast } = useToast();
@@ -280,11 +283,12 @@ function ExtendPlanSheet({
     if (rows.length === 0) return;
     const r = await actions.extendActivePlan(rows);
     if (r.ok) {
+      const addedIds = rows.map(r => r.flavor_id);
       toast({
         title: 'Added to plan',
         description: `${rows.length} ${rows.length === 1 ? 'flavor' : 'flavors'} added.`,
       });
-      onAdded();
+      onAdded(addedIds);
     } else {
       toast({ title: 'Add failed', description: r.error, variant: 'destructive' });
     }
