@@ -72,12 +72,12 @@ export default function TransferScreen() {
     if (focus && !focusedLine) setFocus(null);
   }, [focus, focusedLine]);
 
-  // Completion gate uses `gaps` (which respects the just-added filter) and
-  // checks for outstanding short_imp. `needed` skips rows that have no
-  // warehouse pool, so it can be empty even when the just-added flavor still
-  // shows a deficit. We want the red gap card to render in that case.
-  const hasOutstanding = gaps.some(g => g.short_imp > 0 || g.picks.length > 0);
-  if (hasPlan && !hasOutstanding) {
+  // Completion gate. When the just-added filter is active, never short-circuit
+  // to PlanCompleteView. Brenda just added flavors and expects to see them on
+  // this screen, whether they need warehouse pulls (red card) or are already
+  // covered by kitchen rolls (green card). Without that filter we use the
+  // unfiltered `needed` list, which is what tells us the whole plan is done.
+  if (hasPlan && !justIds && needed.length === 0) {
     return <PlanCompleteView />;
   }
 
