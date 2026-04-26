@@ -46,7 +46,7 @@ export async function ensureSchema(): Promise<void> {
   const keeper = await sql`
     SELECT id FROM production_plans
     WHERE status = 'LOCKED'
-    ORDER BY production_date DESC, id DESC
+    ORDER BY week_of DESC, created_at DESC, id DESC
     LIMIT 1
   `;
   if (keeper.length > 0) {
