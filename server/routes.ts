@@ -8,7 +8,7 @@ import {
 import {
   insertShipmentSchema, insertWarehousePoolSchema, insertRollSchema,
   insertUsageEventSchema, insertProductionPlanSchema, insertKitchenPhotoSchema,
-  insertFlavorBurnRateSchema,
+  insertFlavorBurnRateSchema, updateAppSettingsSchema,
 } from "@shared/schema";
 import { z } from "zod";
 
@@ -68,7 +68,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Single-payload state endpoint. Cheap on a small dataset, simple to invalidate.
   // -------------------------------------------------------------------------
   app.get("/api/state", requireAuth, async (_req: Request, res: Response) => {
-    const [flavors, shipments, pools, rolls, usage, plans, photos, burnRates] = await Promise.all([
+    const [flavors, shipments, pools, rolls, usage, plans, photos, burnRates, settings] = await Promise.all([
       storage.listFlavors(),
       storage.listShipments(),
       storage.listPools(),
@@ -77,8 +77,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       storage.listPlans(),
       storage.listPhotos(),
       storage.listBurnRates(),
+      storage.getSettings(),
     ]);
-    res.json({ flavors, shipments, pools, rolls, usage, plans, photos, burnRates });
+    res.json({ flavors, shipments, pools, rolls, usage, plans, photos, burnRates, settings });
   });
 
   // -------------------------------------------------------------------------
@@ -253,6 +254,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/burn-rates", requireAuth, async (_req: Request, res: Response) => {
     const rates = await storage.listBurnRates();
     res.json(rates);
+  });
+
+  // -------------------------------------------------------------------------
+  // App settings — currently just printer lead time in weeks. Drives the
+  // at-risk threshold and the order-by date on the PDF.
+  // -------------------------------------------------------------------------
+  app.patch("/api/settings", requireAdmin, async (req: Request, res: Response) => {
+    const parsed = updateAppSettingsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid settings", details: parsed.error.flatten() });
+    }
+    const result = await storage.updateSettings({
+      lead_time_weeks: parsed.data.lead_time_weeks,
+      updated_by: req.user!.id,
+    });
+    res.json(result);
   });
 
   app.post("/api/burn-rates", requireAdmin, async (req: Request, res: Response) => {

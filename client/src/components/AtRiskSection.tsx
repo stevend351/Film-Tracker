@@ -1,14 +1,16 @@
-import { useMemo, useState } from 'react';
-import { ChevronDown, AlertTriangle, FileDown, ShoppingCart, CheckCircle2 } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { ChevronDown, AlertTriangle, FileDown, ShoppingCart, CheckCircle2, Settings2 } from 'lucide-react';
 import jsPDF from 'jspdf';
-import { useStore, flavorRunway, type FlavorRunway } from '@/store/store';
+import { useStore, buildCombinedOrder, type CombinedOrder, type OrderLine } from '@/store/store';
 import { cn } from '@/lib/utils';
 
-// Inventory section that surfaces flavors under 4 weeks of runway, with a
-// per-flavor breakdown and a PDF export button. Replaces the standalone
-// /orders page as the primary entry point because Brenda is on mobile and
-// never sees the desktop top nav. The existing /orders page still works for
-// admins who want to drill in or override burn rates.
+// Inventory section that surfaces flavors below the at-risk threshold (lead
+// time + 1 week) and offers a balanced multi-flavor order PDF. Each at-risk
+// flavor gets a share of the combined 150k-200k order based on how short it
+// is of the (lead+4)-week target. Slow-moving flavors that are still ok don't
+// burn cash; truly low-runway flavors get topped up first. Steven can change
+// the printer lead time inline; everything (threshold, target, order-by date)
+// re-derives from it.
 
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
@@ -22,26 +24,17 @@ function fmtNum(n: number): string {
 
 function weeksLabel(w: number): string {
   if (!isFinite(w)) return '—';
-  if (w >= 52) return '52+';
+  if (w >= 99) return '99+';
   return w.toFixed(1);
 }
 
 export function AtRiskSection() {
-  const { state } = useStore();
-  const runway = useMemo(() => flavorRunway(state), [state]);
-  const atRisk = useMemo(
-    () => runway.filter(r => r.triggers).sort((a, b) => a.weeks - b.weeks),
-    [runway],
-  );
+  const { state, actions } = useStore();
+  const order = useMemo(() => buildCombinedOrder(state), [state]);
+  const atRiskLines = useMemo(() => order.lines.filter(l => l.triggers), [order.lines]);
   const [open, setOpen] = useState(false);
 
-  const worstOrderBy = atRisk[0]?.order_by_date ?? null;
-  const count = atRisk.length;
-
-  // Header summary depends on whether any flavor is at risk. Even when nothing
-  // is triggered we keep the section visible so the entry point is discoverable
-  // and the PDF export remains reachable for over-ordering scenarios.
-  const safe = count === 0;
+  const safe = atRiskLines.length === 0;
 
   return (
     <section
@@ -76,15 +69,17 @@ export function AtRiskSection() {
             </h2>
             <p className="mt-0.5 text-base font-semibold" data-testid="text-at-risk-summary">
               {safe ? (
-                <span className="text-foreground">All flavors above 4 weeks runway</span>
+                <span className="text-foreground">
+                  All flavors above {order.lead_time_weeks + 1} weeks runway
+                </span>
               ) : (
                 <>
-                  <span className="font-mono">{count}</span>{' '}
-                  {count === 1 ? 'flavor' : 'flavors'} at risk
-                  {worstOrderBy && (
+                  <span className="font-mono">{atRiskLines.length}</span>{' '}
+                  {atRiskLines.length === 1 ? 'flavor' : 'flavors'} at risk
+                  {order.earliest_order_by && (
                     <>
                       <span className="text-muted-foreground font-normal"> · order by </span>
-                      <span className="font-mono">{fmtDate(worstOrderBy)}</span>
+                      <span className="font-mono">{fmtDate(order.earliest_order_by)}</span>
                     </>
                   )}
                 </>
@@ -99,19 +94,49 @@ export function AtRiskSection() {
 
       {open && (
         <div className="px-3 pb-3 space-y-3">
-          {atRisk.length === 0 ? (
+          <LeadTimeControl
+            value={state.settings?.lead_time_weeks ?? 4}
+            onSave={lt => actions.setLeadTime(lt)}
+          />
+
+          {atRiskLines.length === 0 ? (
             <div className="rounded-md border border-border bg-card/40 p-3 text-xs text-muted-foreground">
-              Nothing is under 4 weeks of runway. The PDF will still export every flavor with a
-              calculated burn rate, in case you want to place a stocking order anyway.
+              Nothing is below {order.lead_time_weeks + 1} weeks of runway. The PDF will still
+              build a combined order shaped to keep every active flavor at {order.target_weeks}{' '}
+              weeks of supply, in case you want to place a stocking order anyway.
             </div>
           ) : (
-            atRisk.map(row => <RiskRow key={row.flavor.id} row={row} />)
+            atRiskLines.map(line => <RiskRow key={line.flavor.id} line={line} />)
+          )}
+
+          {/* Combined order summary */}
+          {order.lines.length > 0 && (
+            <div
+              className="rounded-lg border border-primary-border bg-card p-3 text-xs"
+              data-testid="combined-order-summary"
+            >
+              <div className="flex items-center gap-2">
+                <ShoppingCart className="h-4 w-4 shrink-0 text-primary" />
+                <span className="text-sm font-semibold">Combined order</span>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <Stat label="Total" value={fmtNum(order.total_imp)} unit="imp" />
+                <Stat label="Rolls" value={String(order.total_rolls)} />
+                <Stat label="Flavors" value={String(order.lines.length)} />
+                <Stat label="Target" value={`${order.target_weeks} wks`} />
+              </div>
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Each flavor's share is sized to bring it to {order.target_weeks} weeks of supply
+                after the new shipment lands. Floor 150k, cap 200k impressions per order.
+              </p>
+            </div>
           )}
 
           <button
             type="button"
-            onClick={() => generateOrderPdf(runway)}
-            className="hover-elevate active-elevate-2 w-full inline-flex h-11 items-center justify-center gap-2 rounded-md border border-primary-border bg-primary text-sm font-semibold text-primary-foreground"
+            onClick={() => generateOrderPdf(order)}
+            disabled={order.lines.length === 0}
+            className="hover-elevate active-elevate-2 w-full inline-flex h-11 items-center justify-center gap-2 rounded-md border border-primary-border bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed"
             data-testid="button-generate-order-pdf"
           >
             <FileDown className="h-4 w-4" />
@@ -120,10 +145,10 @@ export function AtRiskSection() {
 
           <p className="text-[11px] text-muted-foreground">
             Burn rate is the average impressions used per week over the last 4 weeks. Roll size
-            comes from the most recent shipment we received for each flavor. Trigger fires under
-            4 weeks runway (3 week supplier lead + 1 week safety). Suggested order is at least 8
-            weeks of stock or 150,000 impressions, whichever is higher, rounded up to the nearest
-            50,000.
+            comes from the most recent shipment we received for each flavor. A flavor flips to
+            at-risk under {order.lead_time_weeks + 1} weeks runway (printer lead time +{' '}
+            1 week safety). Combined order targets {order.target_weeks} weeks of supply per
+            flavor with a 150k floor and 200k cap.
           </p>
         </div>
       )}
@@ -131,32 +156,103 @@ export function AtRiskSection() {
   );
 }
 
-function RiskRow({ row }: { row: FlavorRunway }) {
+// Lead time editor. Inline because Steven only has one printer at a time and
+// it's the only setting that matters today; a full Settings page would be
+// over-engineering. Saves on blur or Enter; reverts to the saved value if the
+// user clears the field. Bounded 1-20 weeks to catch typos.
+function LeadTimeControl({
+  value,
+  onSave,
+}: {
+  value: number;
+  onSave: (v: number) => Promise<{ ok: boolean; error?: string }>;
+}) {
+  const [draft, setDraft] = useState<string>(String(value));
+  const [saving, setSaving] = useState(false);
+
+  // Re-sync if the prop changes (someone else edits, or initial load).
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+
+  const commit = async () => {
+    const n = parseInt(draft, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 20) {
+      setDraft(String(value));
+      return;
+    }
+    if (n === value) return;
+    setSaving(true);
+    const res = await onSave(n);
+    setSaving(false);
+    if (!res.ok) setDraft(String(value));
+  };
+
+  return (
+    <div
+      className="flex items-center gap-2 rounded-md border border-border bg-card/40 px-3 py-2"
+      data-testid="control-lead-time"
+    >
+      <Settings2 className="h-4 w-4 text-muted-foreground shrink-0" />
+      <label htmlFor="lead-time-input" className="text-xs text-muted-foreground">
+        Printer lead time
+      </label>
+      <input
+        id="lead-time-input"
+        type="number"
+        min={1}
+        max={20}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+        disabled={saving}
+        className="h-8 w-14 rounded-md border border-border bg-background px-2 text-center text-sm font-mono tabular-nums focus:outline-none focus:ring-1 focus:ring-primary"
+        data-testid="input-lead-time"
+      />
+      <span className="text-xs text-muted-foreground">weeks</span>
+      {saving && <span className="ml-auto text-[10px] text-muted-foreground">saving…</span>}
+    </div>
+  );
+}
+
+function RiskRow({ line }: { line: OrderLine }) {
   return (
     <div
       className="rounded-lg border border-rose-500/40 bg-card p-3"
-      data-testid={`risk-row-${row.flavor.slug}`}
+      data-testid={`risk-row-${line.flavor.slug}`}
     >
       <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-sm font-semibold tracking-tight">{row.flavor.name}</h3>
-        <span className="font-mono text-[10px] text-muted-foreground">{row.flavor.prefix}</span>
+        <h3 className="text-sm font-semibold tracking-tight">{line.flavor.name}</h3>
+        <span className="font-mono text-[10px] text-muted-foreground">{line.flavor.prefix}</span>
       </div>
 
       <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
-        <Stat label="Available" value={fmtNum(row.available_imp)} unit="imp" />
-        <Stat label="Runway" value={weeksLabel(row.weeks)} unit="weeks" danger />
-        <Stat label="Stockout" value={fmtDate(row.stockout_date)} mono />
-        <Stat label="Order by" value={fmtDate(row.order_by_date)} mono danger />
+        <Stat label="Available" value={fmtNum(line.available_imp)} unit="imp" />
+        <Stat
+          label="Runway"
+          value={
+            line.weekly_imp > 0
+              ? weeksLabel(line.available_imp / line.weekly_imp)
+              : '—'
+          }
+          unit="weeks"
+          danger
+        />
+        <Stat label="Stockout" value={fmtDate(line.stockout_date)} mono />
+        <Stat label="Order by" value={fmtDate(line.order_by_date)} mono danger />
       </div>
 
       <div className="mt-2 flex items-center gap-2 rounded-md border border-rose-500/40 bg-rose-500/5 px-3 py-2 text-xs text-rose-200">
         <ShoppingCart className="h-4 w-4 shrink-0" />
         <span>
-          Order <span className="font-mono font-semibold">{fmtNum(row.suggested_qty)}</span> imp
-          {row.rolls_needed > 0 && (
+          Share <span className="font-mono font-semibold">{fmtNum(line.share_imp)}</span> imp
+          {line.rolls_needed > 0 && (
             <>
-              {' '}(<span className="font-mono">{row.rolls_needed}</span> rolls @{' '}
-              <span className="font-mono">{fmtNum(row.impressions_per_roll)}</span>)
+              {' '}(<span className="font-mono">{line.rolls_needed}</span> rolls @{' '}
+              <span className="font-mono">{fmtNum(line.impressions_per_roll)}</span>)
             </>
           )}
         </span>
@@ -193,19 +289,12 @@ function Stat({
   );
 }
 
-// PDF generation. Includes every flavor with a known burn rate (whether or not
-// it triggers) so Brenda can place a stocking order for healthy flavors too if
-// she wants. Flavors with no burn rate are skipped because we can't size them.
-// Rows are sorted by triggers first then by runway ascending so the urgent
-// ones land at the top of the supplier email.
-function generateOrderPdf(runway: FlavorRunway[]) {
-  const rows = runway
-    .filter(r => r.weekly_imp > 0)
-    .sort((a, b) => {
-      if (a.triggers !== b.triggers) return a.triggers ? -1 : 1;
-      return a.weeks - b.weeks;
-    });
-
+// PDF generation. Prints the combined order: each flavor's share, total
+// impressions, total rolls, target supply window, and a per-flavor block
+// with the math. At-risk flavors land at the top of the document and are
+// flagged in red so the printer (or anyone Steven forwards the PDF to)
+// can see what's urgent.
+function generateOrderPdf(order: CombinedOrder) {
   const doc = new jsPDF({ unit: 'pt', format: 'letter' });
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 40;
@@ -222,78 +311,92 @@ function generateOrderPdf(runway: FlavorRunway[]) {
   doc.text(`Generated ${today}`, margin, y);
   y += 14;
 
-  const triggerCount = rows.filter(r => r.triggers).length;
-  doc.setFontSize(10);
-  doc.setTextColor(triggerCount > 0 ? 180 : 60, triggerCount > 0 ? 30 : 120, 30);
+  if (order.at_risk_count > 0) {
+    doc.setTextColor(180, 30, 30);
+    doc.text(
+      `${order.at_risk_count} ${order.at_risk_count === 1 ? 'flavor needs' : 'flavors need'} ordering now`,
+      margin,
+      y,
+    );
+    doc.setTextColor(0, 0, 0);
+    y += 14;
+  }
+
+  doc.setTextColor(80, 80, 80);
   doc.text(
-    triggerCount > 0
-      ? `${triggerCount} ${triggerCount === 1 ? 'flavor needs' : 'flavors need'} ordering now`
-      : 'All flavors above 4 weeks runway',
+    `Lead time ${order.lead_time_weeks} wk · target ${order.target_weeks} wk supply per flavor`,
     margin,
     y,
   );
   doc.setTextColor(0, 0, 0);
-  y += 20;
+  y += 18;
 
   // Totals
-  const totalImp = rows.reduce((s, r) => s + r.suggested_qty, 0);
-  const totalRolls = rows.reduce((s, r) => s + r.rolls_needed, 0);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(11);
-  doc.text(`Total order: ${fmtNum(totalImp)} imp · ${totalRolls} rolls`, margin, y);
+  doc.text(
+    `Total order: ${fmtNum(order.total_imp)} imp · ${order.total_rolls} rolls · ${order.lines.length} ${order.lines.length === 1 ? 'flavor' : 'flavors'}`,
+    margin,
+    y,
+  );
   y += 18;
   doc.setFont('helvetica', 'normal');
 
-  // Per-flavor block
-  for (const r of rows) {
-    if (y > 720) {
-      doc.addPage();
-      y = margin;
-    }
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(12);
-    const headline = r.triggers
-      ? `${r.flavor.name}  —  AT RISK`
-      : `${r.flavor.name}`;
-    if (r.triggers) doc.setTextColor(180, 30, 30);
-    doc.text(headline, margin, y);
-    doc.setTextColor(0, 0, 0);
-    y += 14;
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-    const lines = [
-      `Available now:        ${fmtNum(r.available_imp)} imp`,
-      `Weekly burn (4wk avg):${' '}${fmtNum(r.weekly_imp)} imp/week`,
-      `Runway:               ${weeksLabel(r.weeks)} weeks`,
-      `Stockout date:        ${fmtDate(r.stockout_date)}`,
-      `Order by:             ${fmtDate(r.order_by_date)}`,
-      `Suggested order:      ${fmtNum(r.suggested_qty)} imp`,
-      `Roll size (last ship):${' '}${r.impressions_per_roll > 0 ? fmtNum(r.impressions_per_roll) + ' imp/roll' : 'unknown'}`,
-      `Rolls needed:         ${r.rolls_needed > 0 ? r.rolls_needed : '—'}`,
-      `Covers:               ${r.weeks_of_supply.toFixed(1)} weeks of supply`,
-    ];
-    for (const line of lines) {
-      if (y > 740) {
-        doc.addPage();
-        y = margin;
-      }
-      doc.text(line, margin + 10, y);
-      y += 13;
-    }
-    y += 8;
-    doc.setDrawColor(220, 220, 220);
-    doc.line(margin, y, pageW - margin, y);
-    y += 12;
-  }
-
-  if (rows.length === 0) {
+  if (order.lines.length === 0) {
     doc.setFontSize(11);
     doc.text(
       'No flavors have a calculated burn rate yet. Log usage for a few weeks then re-run.',
       margin,
       y,
     );
+    const filename = `papa-steves-order-${new Date().toISOString().slice(0, 10)}.pdf`;
+    doc.save(filename);
+    return;
+  }
+
+  // Per-flavor block
+  for (const line of order.lines) {
+    if (y > 700) {
+      doc.addPage();
+      y = margin;
+    }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(12);
+    const headline = line.triggers
+      ? `${line.flavor.name}  —  AT RISK`
+      : `${line.flavor.name}`;
+    if (line.triggers) doc.setTextColor(180, 30, 30);
+    doc.text(headline, margin, y);
+    doc.setTextColor(0, 0, 0);
+    y += 14;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    const runway = line.weekly_imp > 0 ? line.available_imp / line.weekly_imp : Infinity;
+    const lines = [
+      `Order this round:     ${fmtNum(line.share_imp)} imp` +
+        (line.rolls_needed > 0
+          ? ` · ${line.rolls_needed} ${line.rolls_needed === 1 ? 'roll' : 'rolls'} @ ${fmtNum(line.impressions_per_roll)}`
+          : ''),
+      `Available now:        ${fmtNum(line.available_imp)} imp`,
+      `Weekly burn (4wk avg):${' '}${fmtNum(line.weekly_imp)} imp/week`,
+      `Runway today:         ${weeksLabel(runway)} weeks`,
+      `Stockout date:        ${fmtDate(line.stockout_date)}`,
+      `Order by:             ${fmtDate(line.order_by_date)}`,
+      `Supply after order:   ${weeksLabel(line.weeks_of_supply_after)} weeks`,
+    ];
+    for (const l of lines) {
+      if (y > 740) {
+        doc.addPage();
+        y = margin;
+      }
+      doc.text(l, margin + 10, y);
+      y += 13;
+    }
+    y += 8;
+    doc.setDrawColor(220, 220, 220);
+    doc.line(margin, y, pageW - margin, y);
+    y += 12;
   }
 
   const filename = `papa-steves-order-${new Date().toISOString().slice(0, 10)}.pdf`;

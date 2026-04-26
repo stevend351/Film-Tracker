@@ -82,4 +82,21 @@ export async function ensureSchema(): Promise<void> {
       updated_by TEXT REFERENCES users(id) ON DELETE SET NULL
     )
   `;
+
+  // App settings singleton. lead_time_weeks drives the at-risk threshold and
+  // the order-by date on the PDF. Default 4 weeks matches the current printer.
+  // Switching printers means bumping this number, no code change.
+  await sql`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      id TEXT PRIMARY KEY,
+      lead_time_weeks INTEGER NOT NULL DEFAULT 4,
+      updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+      updated_by TEXT REFERENCES users(id) ON DELETE SET NULL
+    )
+  `;
+  await sql`
+    INSERT INTO app_settings (id, lead_time_weeks)
+    VALUES ('singleton', 4)
+    ON CONFLICT (id) DO NOTHING
+  `;
 }

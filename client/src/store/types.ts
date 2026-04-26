@@ -122,3 +122,10 @@ export interface FlavorBurnRate {
   updated_at: string;
   updated_by?: string | null;
 }
+
+export interface AppSettings {
+  id: string;
+  lead_time_weeks: number;
+  updated_at: string;
+  updated_by?: string | null;
+}

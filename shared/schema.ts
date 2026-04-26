@@ -130,6 +130,18 @@ export const flavor_burn_rates = pgTable("flavor_burn_rates", {
 });
 
 // ---------------------------------------------------------------------------
+// app_settings — single-row key/value store for tunables. Right now it holds
+// printer lead time in weeks (drives at-risk threshold + order-by date) but
+// any future global setting lives here too. Keyed by id='singleton'.
+// ---------------------------------------------------------------------------
+export const app_settings = pgTable("app_settings", {
+  id: text("id").primaryKey(), // always 'singleton'
+  lead_time_weeks: integer("lead_time_weeks").notNull().default(4),
+  updated_at: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  updated_by: text("updated_by").references(() => users.id, { onDelete: "set null" }),
+});
+
+// ---------------------------------------------------------------------------
 // kitchen_photos — base64 data URLs in TEXT, ~150KB each after client downscale.
 // ---------------------------------------------------------------------------
 export const kitchen_photos = pgTable("kitchen_photos", {
@@ -240,3 +252,9 @@ export type InsertKitchenPhoto = z.infer<typeof insertKitchenPhotoSchema>;
 
 export type FlavorBurnRate = typeof flavor_burn_rates.$inferSelect;
 export type InsertFlavorBurnRate = z.infer<typeof insertFlavorBurnRateSchema>;
+
+export type AppSettings = typeof app_settings.$inferSelect;
+export const updateAppSettingsSchema = z.object({
+  lead_time_weeks: z.number().int().min(1).max(20),
+});
+export type UpdateAppSettings = z.infer<typeof updateAppSettingsSchema>;

@@ -1,6 +1,6 @@
 import {
   users, flavors, shipments, warehouse_pools, rolls, usage_events,
-  production_plans, kitchen_photos, flavor_burn_rates,
+  production_plans, kitchen_photos, flavor_burn_rates, app_settings,
 } from "@shared/schema";
 import type {
   User, InsertUser,
@@ -12,6 +12,7 @@ import type {
   ProductionPlan, InsertProductionPlan,
   KitchenPhoto, InsertKitchenPhoto,
   FlavorBurnRate, InsertFlavorBurnRate,
+  AppSettings,
 } from "@shared/schema";
 import { db } from "./db";
 import { eq, and, sql as dsql } from "drizzle-orm";
@@ -585,6 +586,48 @@ export class DatabaseStorage implements IStorage {
       .returning();
     if (!r[0]) throw new Error(`upsertBurnRate: failed for ${input.flavor_id}`);
     return r[0];
+  }
+
+  // ---- app settings -----------------------------------------------------
+  // Singleton row keyed by id='singleton'. ensureSchema() inserts it on first
+  // boot, so getSettings() should always find it. Defensive fallback in case
+  // the migration insert raced with an early request.
+  async getSettings(): Promise<AppSettings> {
+    const r = await db.select().from(app_settings).where(eq(app_settings.id, "singleton")).limit(1);
+    if (r[0]) return r[0];
+    const ins = await db
+      .insert(app_settings)
+      .values({ id: "singleton", lead_time_weeks: 4 })
+      .onConflictDoNothing({ target: app_settings.id })
+      .returning();
+    if (ins[0]) return ins[0];
+    const again = await db.select().from(app_settings).where(eq(app_settings.id, "singleton")).limit(1);
+    if (!again[0]) throw new Error("getSettings: app_settings singleton missing");
+    return again[0];
+  }
+
+  async updateSettings(input: { lead_time_weeks: number; updated_by: string | null }): Promise<AppSettings> {
+    const r = await db
+      .update(app_settings)
+      .set({
+        lead_time_weeks: input.lead_time_weeks,
+        updated_by: input.updated_by,
+        updated_at: new Date(),
+      })
+      .where(eq(app_settings.id, "singleton"))
+      .returning();
+    if (r[0]) return r[0];
+    // Singleton row missing for some reason. Insert it.
+    const ins = await db
+      .insert(app_settings)
+      .values({
+        id: "singleton",
+        lead_time_weeks: input.lead_time_weeks,
+        updated_by: input.updated_by,
+      })
+      .returning();
+    if (!ins[0]) throw new Error("updateSettings: failed");
+    return ins[0];
   }
 
   // ---- admin ------------------------------------------------------------

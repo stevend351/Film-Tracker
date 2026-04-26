@@ -5,8 +5,17 @@ import { toast } from '@/hooks/use-toast';
 import type {
   Flavor, Shipment, WarehousePool, Roll, UsageEvent,
   ProductionPlan, ProductionPlanRow, KitchenPhoto, PickListLine, Location,
-  FlavorBurnRate,
+  FlavorBurnRate, AppSettings,
 } from './types';
+
+// Default settings used until the server payload arrives. Mirrors the
+// migration default so the UI matches the database on first paint.
+const DEFAULT_SETTINGS: AppSettings = {
+  id: 'singleton',
+  lead_time_weeks: 4,
+  updated_at: new Date(0).toISOString(),
+  updated_by: null,
+};
 
 // ---------------------------------------------------------------------------
 // State shape — same surface the prototype pages expect.
@@ -21,6 +30,7 @@ export interface State {
   plans: ProductionPlan[];
   photos: KitchenPhoto[];
   burnRates: FlavorBurnRate[];
+  settings: AppSettings;
 }
 
 const EMPTY_STATE: State = {
@@ -32,6 +42,7 @@ const EMPTY_STATE: State = {
   plans: [],
   photos: [],
   burnRates: [],
+  settings: DEFAULT_SETTINGS,
 };
 
 // API state response is the same shape — the server already returns these keys.
@@ -44,6 +55,7 @@ interface ApiState {
   plans: ProductionPlan[];
   photos: KitchenPhoto[];
   burnRates: FlavorBurnRate[];
+  settings?: AppSettings; // older payloads pre-deploy will lack this
 }
 
 // ---------------------------------------------------------------------------
@@ -324,8 +336,12 @@ export function rollAge(roll: Roll, plans: ProductionPlan[]): RollAge {
 // Order projector. Weekly burn rate auto-computed from the last 4 weeks of
 // usage_events per flavor. Falls back to the saved burnRates row when no
 // usage history exists yet. Available impressions = warehouse + kitchen
-// non-DEPLETED non-OFFLINE rolls. Trigger when runway drops below 4 weeks
-// (3wk lead + 1wk safety). Min order is 150k impressions.
+// non-DEPLETED non-OFFLINE rolls.
+//
+// Lead time drives everything: a flavor is at risk when runway drops below
+// (lead_time + 1 week), and order-by date is stockout - lead_time. Target
+// stock per flavor after the new shipment arrives is (lead_time + 4 weeks).
+// All numbers update automatically if Steven changes the printer lead time.
 // ---------------------------------------------------------------------------
 export type BurnRateSource = 'usage' | 'manual' | 'none';
 
@@ -336,12 +352,11 @@ export interface FlavorRunway {
   available_imp: number;          // warehouse + kitchen on-hand
   weeks: number;                  // runway in weeks (Infinity if weekly_imp=0)
   stockout_date: string | null;   // ISO date or null
-  order_by_date: string | null;   // stockout_date minus 4-week lead, ISO date
-  suggested_qty: number;          // rounded up to 50k
-  rolls_needed: number;           // suggested_qty / impressions_per_roll, rounded up
+  order_by_date: string | null;   // stockout - lead_time, ISO date
+  target_imp: number;             // target stock = (lead+4) * weekly_imp
+  gap_imp: number;                // max(0, target_imp - available_imp), unrounded
   impressions_per_roll: number;   // most recent received roll size for this flavor
-  weeks_of_supply: number;        // suggested_qty / weekly_imp
-  triggers: boolean;              // weeks < 4 AND weekly_imp > 0
+  triggers: boolean;              // weekly_imp > 0 AND weeks < lead_time + 1
 }
 
 // Most recent impressions_per_roll the supplier shipped for each flavor. Picks
@@ -376,6 +391,9 @@ function usageBurnRate(state: State, flavor_id: string, today: Date): number {
 export function flavorRunway(state: State): FlavorRunway[] {
   const inv = flavorInventory(state);
   const today = new Date();
+  const lead = Math.max(1, state.settings?.lead_time_weeks ?? 4);
+  const target_weeks = lead + 4; // 2-month target after the new shipment lands
+  const at_risk_weeks = lead + 1; // flag a flavor when runway drops this low
   return state.flavors.map(flavor => {
     const inv_for = inv.find(i => i.flavor.id === flavor.id);
     const kitchen_imp = inv_for?.kitchen_remaining ?? 0;
@@ -399,19 +417,14 @@ export function flavorRunway(state: State): FlavorRunway[] {
       weeks = available_imp / weekly_imp;
       const stockoutMs = today.getTime() + weeks * 7 * 24 * 60 * 60 * 1000;
       stockout_date = new Date(stockoutMs).toISOString().slice(0, 10);
-      // 4 weeks before stockout. If already past, returns a date in the past which
-      // signals 'order now'.
-      const orderByMs = stockoutMs - 28 * 24 * 60 * 60 * 1000;
+      // Lead-time weeks before stockout. Past = 'order now'.
+      const orderByMs = stockoutMs - lead * 7 * 24 * 60 * 60 * 1000;
       order_by_date = new Date(orderByMs).toISOString().slice(0, 10);
     }
-    // 8 weeks = 2 months target stock. Min order 150k. Round up to nearest 50k.
-    const target = weekly_imp * 8;
-    const raw = Math.max(150_000, target);
-    const suggested_qty = Math.ceil(raw / 50_000) * 50_000;
+    const target_imp = weekly_imp > 0 ? Math.ceil(weekly_imp * target_weeks) : 0;
+    const gap_imp = Math.max(0, target_imp - available_imp);
     const impressions_per_roll = latestRollSize(state, flavor.id);
-    const rolls_needed = impressions_per_roll > 0 ? Math.ceil(suggested_qty / impressions_per_roll) : 0;
-    const weeks_of_supply = weekly_imp > 0 ? suggested_qty / weekly_imp : 0;
-    const triggers = weekly_imp > 0 && weeks < 4;
+    const triggers = weekly_imp > 0 && weeks < at_risk_weeks;
     return {
       flavor,
       weekly_imp,
@@ -420,13 +433,195 @@ export function flavorRunway(state: State): FlavorRunway[] {
       weeks,
       stockout_date,
       order_by_date,
-      suggested_qty,
-      rolls_needed,
+      target_imp,
+      gap_imp,
       impressions_per_roll,
-      weeks_of_supply,
       triggers,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Combined order builder.
+//
+// Steven orders multiple flavors at once with a 150k floor and a 200k cap.
+// We size each flavor's share by its gap to (lead+4) weeks of supply, then
+// reconcile to the combined floor/cap:
+//
+//   - Sum each flavor's gap. Slow movers and flavors that already have
+//     plenty contribute small or zero shares, so the order naturally
+//     balances toward at-risk flavors.
+//   - If the total is below 150k, top up the slowest-moving flavors (by
+//     weeks-of-supply remaining after the gap) until we hit 150k. Keeps
+//     the total at the printer's minimum without over-ordering hot flavors.
+//   - If the total is above 200k, scale all shares proportionally back to
+//     200k. Steven re-orders sooner instead of carrying more cash in film.
+//   - Round each flavor up to a multiple of 5k for clean printer numbers,
+//     then reconcile the total again.
+//
+// Only flavors with weekly_imp > 0 participate. Flavors that have never
+// been used drop out entirely — ordering film for a flavor with no demand
+// signal would just tie up cash.
+// ---------------------------------------------------------------------------
+export interface OrderLine {
+  flavor: Flavor;
+  share_imp: number;              // impressions assigned to this flavor in the order
+  rolls_needed: number;           // share_imp / impressions_per_roll, rounded up
+  impressions_per_roll: number;   // most recent shipment's roll size
+  weeks_of_supply_after: number;  // (available + share) / weekly_imp
+  triggers: boolean;              // mirrors FlavorRunway.triggers
+  weekly_imp: number;
+  available_imp: number;
+  stockout_date: string | null;
+  order_by_date: string | null;
+}
+
+export interface CombinedOrder {
+  total_imp: number;
+  total_rolls: number;
+  earliest_order_by: string | null; // worst-case order-by across at-risk flavors
+  at_risk_count: number;
+  lines: OrderLine[];               // sorted: at-risk first, then by share desc
+  lead_time_weeks: number;
+  target_weeks: number;
+}
+
+const FLOOR_IMP = 150_000;
+const CAP_IMP = 200_000;
+const ROUND_TO = 5_000;
+
+function roundUpTo(n: number, step: number): number {
+  return Math.ceil(n / step) * step;
+}
+
+export function buildCombinedOrder(state: State): CombinedOrder {
+  const runways = flavorRunway(state);
+  const lead = Math.max(1, state.settings?.lead_time_weeks ?? 4);
+  const target_weeks = lead + 4;
+
+  // Only flavors with demand signal participate. Each starts with its
+  // gap-to-target as its share. Slow movers may have gap=0 if they're
+  // already above the target.
+  type Working = {
+    runway: FlavorRunway;
+    share: number;
+  };
+  const working: Working[] = runways
+    .filter(r => r.weekly_imp > 0)
+    .map(r => ({ runway: r, share: r.gap_imp }));
+
+  if (working.length === 0) {
+    return {
+      total_imp: 0,
+      total_rolls: 0,
+      earliest_order_by: null,
+      at_risk_count: 0,
+      lines: [],
+      lead_time_weeks: lead,
+      target_weeks,
+    };
+  }
+
+  let total = working.reduce((s, w) => s + w.share, 0);
+
+  // Top up if we're under the floor: pad the slowest movers (lowest current
+  // weeks of supply) until the order hits 150k. This catches the case where
+  // every flavor is comfortable but Steven wants to keep a regular cadence.
+  if (total < FLOOR_IMP) {
+    const deficit = FLOOR_IMP - total;
+    // Sort by weeks-remaining ascending so the most-stretched flavor gets
+    // padded first. Stable secondary sort by weekly_imp descending so big
+    // movers absorb the extra before tiny flavors do.
+    const sorted = [...working].sort((a, b) => {
+      const wa = a.runway.weeks;
+      const wb = b.runway.weeks;
+      if (wa !== wb) return wa - wb;
+      return b.runway.weekly_imp - a.runway.weekly_imp;
+    });
+    let remaining = deficit;
+    // Distribute the deficit proportionally to weekly_imp across the top
+    // half of the sorted list (or all if there are very few flavors). This
+    // keeps the padding aligned with real demand, not arbitrary.
+    const padCount = Math.max(1, Math.ceil(sorted.length / 2));
+    const padPool = sorted.slice(0, padCount);
+    const padTotal = padPool.reduce((s, w) => s + w.runway.weekly_imp, 0);
+    if (padTotal > 0) {
+      for (const w of padPool) {
+        const slice = (w.runway.weekly_imp / padTotal) * deficit;
+        w.share += slice;
+        remaining -= slice;
+      }
+    } else {
+      // No demand at all in pad pool (shouldn't happen since we filtered),
+      // fall back to even split.
+      for (const w of padPool) w.share += deficit / padPool.length;
+      remaining = 0;
+    }
+    total = working.reduce((s, w) => s + w.share, 0);
+  }
+
+  // Scale back if we're over the cap. Proportional scaling keeps the
+  // balance Steven wanted, just shrunk.
+  if (total > CAP_IMP) {
+    const ratio = CAP_IMP / total;
+    for (const w of working) w.share *= ratio;
+    total = working.reduce((s, w) => s + w.share, 0);
+  }
+
+  // Round each share up to 5k for clean printer numbers. This will push the
+  // total slightly above the floor or cap by up to (lines * 5k); the printer
+  // doesn't care about exact totals, only clean per-flavor numbers.
+  for (const w of working) {
+    if (w.share > 0) w.share = roundUpTo(w.share, ROUND_TO);
+  }
+
+  // Build OrderLines. Drop zero-share lines so the PDF only lists flavors
+  // actually being ordered.
+  const lines: OrderLine[] = working
+    .filter(w => w.share > 0)
+    .map(w => {
+      const rpr = w.runway.impressions_per_roll;
+      const rolls_needed = rpr > 0 ? Math.ceil(w.share / rpr) : 0;
+      const wos =
+        w.runway.weekly_imp > 0
+          ? (w.runway.available_imp + w.share) / w.runway.weekly_imp
+          : 0;
+      return {
+        flavor: w.runway.flavor,
+        share_imp: Math.round(w.share),
+        rolls_needed,
+        impressions_per_roll: rpr,
+        weeks_of_supply_after: wos,
+        triggers: w.runway.triggers,
+        weekly_imp: w.runway.weekly_imp,
+        available_imp: w.runway.available_imp,
+        stockout_date: w.runway.stockout_date,
+        order_by_date: w.runway.order_by_date,
+      };
+    })
+    .sort((a, b) => {
+      if (a.triggers !== b.triggers) return a.triggers ? -1 : 1;
+      return b.share_imp - a.share_imp;
+    });
+
+  const at_risk = lines.filter(l => l.triggers);
+  const earliest_order_by =
+    at_risk.length > 0
+      ? at_risk
+          .map(l => l.order_by_date)
+          .filter((d): d is string => !!d)
+          .sort()[0] ?? null
+      : null;
+
+  return {
+    total_imp: lines.reduce((s, l) => s + l.share_imp, 0),
+    total_rolls: lines.reduce((s, l) => s + l.rolls_needed, 0),
+    earliest_order_by,
+    at_risk_count: at_risk.length,
+    lines,
+    lead_time_weeks: lead,
+    target_weeks,
+  };
 }
 
 // uuid-shaped id for client-minted rows. crypto.randomUUID is on every modern
@@ -471,6 +666,8 @@ export interface StageRollVerifiedError {
 
 export interface StoreActions {
   setBurnRate: (flavor_id: string, weekly_imp: number) => Promise<{ ok: boolean; error?: string }>;
+  // Update printer lead time. Drives at-risk threshold and order-by date.
+  setLeadTime: (lead_time_weeks: number) => Promise<{ ok: boolean; error?: string }>;
   markRollBad: (roll_id: string) => void;
   receiveShipment: (orderNo: string, lines: ReceiveLine[]) => Shipment;
   // Label-driven staging: server validates label fields against pool, mints
@@ -533,7 +730,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     staleTime: 30_000, // 30s. Mutations call invalidateQueries explicitly anyway.
   });
 
-  const state: State = data ?? EMPTY_STATE;
+  // Old API payloads (pre-deploy) lack `settings`. Backfill with defaults so
+  // the UI doesn't crash before the new server is live.
+  const state: State = data
+    ? { ...data, settings: data.settings ?? DEFAULT_SETTINGS }
+    : EMPTY_STATE;
 
   // ------ mutations ------
   const invalidate = () => queryClient.invalidateQueries({ queryKey: STATE_KEY });
@@ -649,11 +850,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     onError: onError('Save burn rate'),
   });
 
+  const settingsMut = useMutation({
+    mutationFn: async (vars: { lead_time_weeks: number }) => {
+      const res = await apiRequest('PATCH', '/api/settings', vars);
+      return res.json();
+    },
+    onSuccess: invalidate,
+    onError: onError('Save lead time'),
+  });
+
   // ------ actions surface ------
   const actions = useMemo<StoreActions>(() => ({
     async setBurnRate(flavor_id, weekly_imp) {
       try {
         await burnRateMut.mutateAsync({ flavor_id, weekly_imp });
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+
+    async setLeadTime(lead_time_weeks) {
+      try {
+        await settingsMut.mutateAsync({ lead_time_weeks });
         return { ok: true };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -852,7 +1071,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       queryClient.invalidateQueries({ queryKey: STATE_KEY });
     },
     // The mutation hooks are stable across renders, so depend only on `state`.
-  }), [state, shipmentMut, rollMut, rollPatchMut, usageMut, planMut, planExtendMut, planFinishMut, planDeleteMut, planRowDeleteMut, photoMut, burnRateMut, queryClient]);
+  }), [state, shipmentMut, rollMut, rollPatchMut, usageMut, planMut, planExtendMut, planFinishMut, planDeleteMut, planRowDeleteMut, photoMut, burnRateMut, settingsMut, queryClient]);
 
   return (
     <StoreContext.Provider value={{ state, actions, isLoading, isError }}>
