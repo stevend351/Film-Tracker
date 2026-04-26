@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useSearch } from 'wouter';
-import { CheckCircle2, ChevronRight, ArrowLeft, PartyPopper, Trash2, AlertTriangle, ClipboardList } from 'lucide-react';
+import { CheckCircle2, ChevronRight, ArrowLeft, PartyPopper, Trash2, AlertTriangle, ClipboardList, ImageOff } from 'lucide-react';
 import {
   useStore,
   computeStillNeeded,
@@ -26,6 +26,8 @@ import {
 } from '@/components/ui/alert-dialog';
 import { cn } from '@/lib/utils';
 import { PhotoCapture } from '@/components/PhotoCapture';
+import { PhotoZoom } from '@/components/PhotoZoom';
+import type { KitchenPhoto } from '@/store/types';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
@@ -39,6 +41,18 @@ import { Label } from '@/components/ui/label';
 //   3. No plan: free-form staging (the original flow).
 
 type FocusKey = { flavorId: string; poolId: string };
+
+// Latest photo per roll, preferring USAGE > STAGED. Same rule as Inventory:
+// the freshest label photo is the one Brenda just stuck on the roll.
+function latestPhotoByRoll(photos: KitchenPhoto[]): Map<string, KitchenPhoto> {
+  const m = new Map<string, KitchenPhoto>();
+  const sorted = [...photos].sort((a, b) => (a.taken_at < b.taken_at ? 1 : -1));
+  for (const p of sorted) {
+    if (!p.roll_id) continue;
+    if (!m.has(p.roll_id)) m.set(p.roll_id, p);
+  }
+  return m;
+}
 
 export default function TransferScreen() {
   const { state } = useStore();
@@ -180,6 +194,9 @@ function PlanGapView({
   totalCount: number;
 }) {
   const [, setLocation] = useLocation();
+  const { state } = useStore();
+  const photoByRoll = useMemo(() => latestPhotoByRoll(state.photos), [state.photos]);
+  const [zoomPhoto, setZoomPhoto] = useState<KitchenPhoto | null>(null);
   const totalToPull = gaps.reduce(
     (s, g) => s + g.picks.reduce((ss, p) => ss + p.rolls_to_pull, 0),
     0,
@@ -247,9 +264,17 @@ function PlanGapView({
 
       <div className="space-y-5">
         {gaps.map(gap => (
-          <FlavorGapCard key={gap.flavor.id} gap={gap} onPickPool={onPickLine} />
+          <FlavorGapCard
+            key={gap.flavor.id}
+            gap={gap}
+            onPickPool={onPickLine}
+            photoByRoll={photoByRoll}
+            onZoomPhoto={setZoomPhoto}
+          />
         ))}
       </div>
+
+      {zoomPhoto && <PhotoZoom photo={zoomPhoto} onClose={() => setZoomPhoto(null)} />}
     </div>
   );
 }
@@ -260,9 +285,13 @@ function PlanGapView({
 function FlavorGapCard({
   gap,
   onPickPool,
+  photoByRoll,
+  onZoomPhoto,
 }: {
   gap: PlanGap;
   onPickPool: (flavorId: string, poolId: string) => void;
+  photoByRoll: Map<string, KitchenPhoto>;
+  onZoomPhoto: (p: KitchenPhoto) => void;
 }) {
   const covered = gap.gap_imp === 0;
   const short = gap.short_imp > 0;
@@ -310,7 +339,12 @@ function FlavorGapCard({
         ) : (
           <ul className="mt-2 space-y-1">
             {gap.kitchen_rolls.map(roll => (
-              <KitchenRollRow key={roll.id} roll={roll} />
+              <KitchenRollRow
+                key={roll.id}
+                roll={roll}
+                photo={photoByRoll.get(roll.id)}
+                onZoomPhoto={onZoomPhoto}
+              />
             ))}
           </ul>
         )}
@@ -422,7 +456,15 @@ function AgePill({ kind, label }: { kind: RollAgeKind; label?: string }) {
 // One row inside the kitchen-on-hand list. Shows imp remaining, age pill, and
 // actions: mark depleted if low imp; mark bad whenever (rolls can be rejected
 // at the press at any time).
-function KitchenRollRow({ roll }: { roll: RollWithUsage }) {
+function KitchenRollRow({
+  roll,
+  photo,
+  onZoomPhoto,
+}: {
+  roll: RollWithUsage;
+  photo?: KitchenPhoto;
+  onZoomPhoto: (p: KitchenPhoto) => void;
+}) {
   const { state, actions } = useStore();
   const { toast } = useToast();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -450,6 +492,25 @@ function KitchenRollRow({ roll }: { roll: RollWithUsage }) {
 
   return (
     <li className="flex items-center justify-between gap-2 rounded-sm bg-background px-2 py-1.5">
+      {/* Photo thumbnail. Tap to zoom. The bare "covered by kitchen" line was
+          making Brenda doubt the math; seeing the actual roll on the shelf
+          makes it real. */}
+      <button
+        type="button"
+        className="h-12 w-12 shrink-0 overflow-hidden rounded-md border border-border bg-muted/40"
+        onClick={() => photo && onZoomPhoto(photo)}
+        disabled={!photo}
+        aria-label={photo ? `Zoom photo of ${roll.short_code}` : 'No photo'}
+        data-testid={`thumb-stage-roll-${roll.short_code}`}
+      >
+        {photo ? (
+          <img src={photo.data_url} alt="" className="h-full w-full object-cover" />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-muted-foreground/60">
+            <ImageOff className="h-4 w-4" />
+          </div>
+        )}
+      </button>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="font-mono text-xs font-semibold">{roll.short_code}</span>

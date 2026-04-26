@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useLocation } from 'wouter';
-import { ChevronDown, Search, ImageOff, X } from 'lucide-react';
+import { ChevronDown, Search, ImageOff } from 'lucide-react';
 import {
   useStore, flavorInventory, activePlan, rollAge,
   type FlavorInventory,
@@ -10,6 +10,7 @@ import type { KitchenPhoto, ProductionPlan } from '@/store/types';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Progress } from '@/components/ui/progress';
+import { PhotoZoom } from '@/components/PhotoZoom';
 
 // Latest photo per roll, preferring USAGE > STAGED.
 function latestPhotoByRoll(photos: KitchenPhoto[]): Map<string, KitchenPhoto> {
@@ -102,7 +103,6 @@ export default function InventoryScreen() {
         countLabel="rolls"
         impressions={totalKitchenImp}
         accent="emerald"
-        defaultOpen
       >
         {kitchenFlavors.length === 0 ? (
           <EmptyState text="No active rolls at the kitchen." />
@@ -248,7 +248,7 @@ function KitchenFlavorCard({
 }
 
 function RollRow({
-  roll, photo, plan, onLog, onZoomPhoto,
+  roll, photo, onZoomPhoto,
 }: {
   roll: RollWithUsage;
   photo?: KitchenPhoto;
@@ -260,9 +260,8 @@ function RollRow({
   const { state } = useStore();
   const age = stagedAgeLabel(roll.staged_at ?? roll.tagged_at);
   const ageInfo = rollAge(roll, state.plans);
-  // Hide Log when there is no active plan. Steven was firm: kitchen should
-  // not log usage outside a production run.
-  const showLog = plan !== null;
+  // No Log button on Inventory. Logging belongs on the Log page only — Steven
+  // was firm that mixing log entry into Inventory created confusion.
   return (
     <div className="flex items-center gap-3 rounded-md p-2 hover-elevate active-elevate-2">
       {/* Thumbnail \u2014 clickable for zoom. */}
@@ -309,16 +308,6 @@ function RollRow({
           </span>
         </div>
       </div>
-      {showLog && (
-        <button
-          type="button"
-          onClick={onLog}
-          className="hover-elevate active-elevate-2 inline-flex h-10 min-w-[3.5rem] items-center justify-center rounded-md border border-primary-border bg-primary px-3 text-xs font-semibold text-primary-foreground"
-          data-testid={`button-log-${roll.short_code}`}
-        >
-          Log
-        </button>
-      )}
     </div>
   );
 }
@@ -396,38 +385,6 @@ function WarehouseFlavorChip({ inv }: { inv: FlavorInventory }) {
             </p>
           ))}
         </div>
-      )}
-    </div>
-  );
-}
-
-function PhotoZoom({ photo, onClose }: { photo: KitchenPhoto; onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4"
-      onClick={onClose}
-      role="dialog"
-      aria-label="Roll photo"
-      data-testid="photo-zoom"
-    >
-      <button
-        type="button"
-        onClick={onClose}
-        className="absolute top-4 right-4 inline-flex h-10 w-10 items-center justify-center rounded-full bg-background/80 text-foreground"
-        aria-label="Close"
-      >
-        <X className="h-5 w-5" />
-      </button>
-      <img
-        src={photo.data_url}
-        alt={photo.caption ?? ''}
-        className="max-h-full max-w-full rounded-lg object-contain"
-        onClick={e => e.stopPropagation()}
-      />
-      {photo.caption && (
-        <p className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-full bg-background/80 px-4 py-1 font-mono text-sm">
-          {photo.caption}
-        </p>
       )}
     </div>
   );

@@ -56,12 +56,20 @@ export function Layout({ children }: { children: ReactNode }) {
   );
 }
 
+// Receive and Photos sit outside the production-lock workflow. Receive is
+// for importing a shipment (no plan needed) and Photos is reference. Showing
+// the Producing banner there implies an action is required and adds noise.
+const HIDE_PLAN_BANNER_PATHS = ['/receive', '/photos'];
+
 function SyncBanner() {
   const [location] = useLocation();
   const { state } = useStore();
   const plan = activePlan(state);
-  const planDate = plan ? fmtBannerDate(plan.week_of) : null;
-  const planFull = plan ? fmtFullDate(plan.week_of) : null;
+  const showPlanBanner = !HIDE_PLAN_BANNER_PATHS.some(
+    p => location === p || location.startsWith(p + '/'),
+  );
+  const planDate = plan && showPlanBanner ? fmtBannerDate(plan.week_of) : null;
+  const planFull = plan && showPlanBanner ? fmtFullDate(plan.week_of) : null;
 
   return (
     <div className="safe-top sticky top-0 z-40 border-b border-border bg-card/80 backdrop-blur-md">
@@ -134,14 +142,14 @@ function SyncBanner() {
         </div>
       )}
 
-      <RunwayBanner />
+      {showPlanBanner && <RunwayBanner />}
     </div>
   );
 }
 
 // Inventory-style alert for any flavor under 4 weeks of runway. Visible on
-// every page so Steven cannot miss a stockout window. Hidden when no flavors
-// trigger so it doesn't add noise.
+// most pages so Steven cannot miss a stockout window. Hidden on Receive and
+// Photos to keep those reference flows quiet.
 function RunwayBanner() {
   const { state } = useStore();
   const triggered = flavorRunway(state).filter(r => r.triggers);
