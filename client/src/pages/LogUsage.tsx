@@ -111,13 +111,28 @@ export default function LogUsageScreen() {
         </Label>
         <div className="mt-2 rounded-xl border border-card-border bg-card p-4">
           <div className="text-center">
-            <div className="font-mono text-4xl font-semibold tabular-nums" data-testid="text-amount">
-              {amount.toLocaleString()}
-            </div>
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={amount === 0 ? '' : amount.toString()}
+              placeholder="0"
+              onChange={(e) => {
+                const digits = e.target.value.replace(/[^0-9]/g, '');
+                const n = digits === '' ? 0 : parseInt(digits, 10);
+                setAmount(Number.isFinite(n) ? n : 0);
+                setError(null);
+              }}
+              onFocus={(e) => e.currentTarget.select()}
+              className="w-full bg-transparent text-center font-mono text-4xl font-semibold tabular-nums outline-none placeholder:text-muted-foreground/40 focus:text-primary"
+              data-testid="input-amount"
+              aria-label="Impressions to add"
+            />
             <p className="mt-1 text-xs text-muted-foreground">impressions to add</p>
           </div>
 
-          <div className="mt-4 grid grid-cols-4 gap-2">
+          <p className="mt-3 text-center text-xs text-muted-foreground">Or quick add</p>
+          <div className="mt-2 grid grid-cols-4 gap-2">
             {QUICK_VALUES.map(v => (
               <button
                 key={v}
