@@ -73,6 +73,14 @@ export const rolls = pgTable("rolls", {
   // for now, but a separate column so we can distinguish staging movements
   // from other lifecycle events later.
   staged_at: timestamp("staged_at", { withTimezone: true }),
+  // Identity from the supplier label. order_no and roll_no together with
+  // pool_id form the verification key. The supplier prints rolls 1..N within
+  // (order, flavor, impressions) so a (pool_id, roll_no) collision means the
+  // physical roll has already been staged. NULL for legacy rows that pre-date
+  // label-driven staging.
+  order_no: text("order_no"),
+  roll_no: integer("roll_no"),
+  production_date: timestamp("production_date", { withTimezone: true }),
 });
 
 // ---------------------------------------------------------------------------
@@ -145,6 +153,9 @@ export const insertWarehousePoolSchema = createInsertSchema(warehouse_pools);
 export const insertRollSchema = createInsertSchema(rolls).extend({
   tagged_at: z.coerce.date(),
   staged_at: z.coerce.date().nullable().optional(),
+  order_no: z.string().nullable().optional(),
+  roll_no: z.number().int().positive().nullable().optional(),
+  production_date: z.coerce.date().nullable().optional(),
 });
 
 export const insertUsageEventSchema = createInsertSchema(usage_events).omit({

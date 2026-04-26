@@ -192,13 +192,36 @@ export interface ReceiveLine {
   impressions_per_roll: number;
 }
 
+export interface StageRollVerifiedInput {
+  flavor_id: string;
+  order_no: string;
+  impressions_per_roll: number;
+  roll_no: number;
+  production_date?: Date | null;
+  photo_data_url: string;
+}
+
+export interface StageRollVerifiedResult {
+  ok: true;
+  roll: Roll;
+}
+
+export interface StageRollVerifiedError {
+  ok: false;
+  code: string;
+  error: string;
+}
+
 export interface StoreActions {
   receiveShipment: (orderNo: string, lines: ReceiveLine[]) => Shipment;
-  // Brenda: pull a roll warehouse -> kitchen STAGED, with required photo of
-  // the ID written on the roll. The caller passes the short_code that was
-  // shown to Brenda so the persisted record matches what she wrote on the
-  // physical tape. If undefined, we generate one fresh.
-  stageRoll: (pool_id: string, photo_data_url: string, short_code?: string) => Roll;
+  // Label-driven staging: server validates label fields against pool, mints
+  // short_code, and persists roll + photo atomically. Returns the result
+  // (success or typed error) so the caller can display the right toast.
+  stageRollVerified: (
+    input: StageRollVerifiedInput,
+  ) => Promise<StageRollVerifiedResult | StageRollVerifiedError>;
+  // Wipe all operational data. Admin only.
+  wipeData: () => Promise<void>;
   // Steven: log impressions used on the machine. Photo of re-taped ID is
   // required. Server promotes STAGED -> IN_USE on first usage, anything ->
   // DEPLETED at zero remaining.
@@ -334,42 +357,47 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return shipment;
     },
 
-    stageRoll(pool_id, photo_data_url, short_code) {
-      const pool = state.pools.find(p => p.id === pool_id);
-      if (!pool) throw new Error('Pool not found');
-      if (pool.rolls_received - pool.rolls_tagged_out <= 0) throw new Error('Pool exhausted');
-      const flavor = state.flavors.find(f => f.id === pool.flavor_id);
-      if (!flavor) throw new Error('Flavor not found');
-      const existing = new Set(state.rolls.map(r => r.short_code));
-      const short = short_code ?? generateShortCode(flavor.prefix, existing);
-      const now = new Date().toISOString();
-      const roll: Roll = {
-        id: uuid('r'),
-        short_code: short,
-        flavor_id: pool.flavor_id,
-        pool_id,
-        impressions_per_roll: pool.impressions_per_roll,
-        status: 'STAGED',
-        location: 'KITCHEN',
-        override_extra_wrap: false,
-        tagged_at: now,
-        staged_at: now,
-      };
-      rollMut.mutate(roll);
-      // Tie the staging photo to the roll. Server stamps taken_by from session.
-      const photo: KitchenPhoto = {
-        id: uuid('ph'),
-        data_url: photo_data_url,
-        caption: short,
-        location: 'KITCHEN',
-        flavor_ids: [pool.flavor_id],
-        taken_at: now,
-        kind: 'STAGED',
-        roll_id: roll.id,
-        usage_event_id: null,
-      };
-      photoMut.mutate(photo);
-      return roll;
+    async stageRollVerified(input) {
+      // Mint client-side ids so an offline retry hits the idempotent path on
+      // the server instead of duplicating.
+      const roll_id = uuid('r');
+      const photo_id = uuid('ph');
+      try {
+        const res = await apiRequest('POST', '/api/rolls/stage', {
+          roll_id,
+          photo_id,
+          flavor_id: input.flavor_id,
+          order_no: input.order_no,
+          impressions_per_roll: input.impressions_per_roll,
+          roll_no: input.roll_no,
+          production_date: input.production_date ?? null,
+          photo_data_url: input.photo_data_url,
+        });
+        const body = await res.json();
+        await invalidate();
+        return { ok: true, roll: body.roll as Roll };
+      } catch (err: any) {
+        // apiRequest throws on non-2xx with `${status}: ${body}`. Try to peel
+        // out the JSON body so the UI can render a clean message.
+        const raw = err instanceof Error ? err.message : String(err);
+        let code = 'UNKNOWN';
+        let message = raw;
+        const colonIdx = raw.indexOf(':');
+        if (colonIdx > 0) {
+          const json = raw.slice(colonIdx + 1).trim();
+          try {
+            const parsed = JSON.parse(json);
+            if (parsed.code) code = String(parsed.code);
+            if (parsed.error) message = String(parsed.error);
+          } catch { /* leave raw message */ }
+        }
+        return { ok: false, code, error: message };
+      }
+    },
+
+    async wipeData() {
+      await apiRequest('POST', '/api/admin/wipe', {});
+      await invalidate();
     },
 
     logUsage(roll_id, impressions_used, photo_data_url, notes, override) {

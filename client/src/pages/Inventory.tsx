@@ -220,7 +220,7 @@ function RollRow({
         )}
       </div>
       <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="font-mono text-sm font-medium" data-testid={`text-rollcode-${roll.short_code}`}>
             {roll.short_code}
           </span>
@@ -234,6 +234,11 @@ function RollRow({
             </span>
           )}
         </div>
+        {(roll.order_no || roll.roll_no != null) && (
+          <p className="mt-0.5 text-[10px] font-mono text-muted-foreground/80 truncate">
+            {roll.order_no ?? '?'}{roll.roll_no != null ? ` · #${roll.roll_no}` : ''}
+          </p>
+        )}
         <div className="mt-1.5 flex items-center gap-2">
           <Progress value={roll.pct_used} className="h-1.5 flex-1" />
           <span className="text-[11px] font-mono text-muted-foreground tabular-nums">

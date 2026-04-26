@@ -138,8 +138,14 @@ export default function PhotosScreen() {
   );
 
   const rollById = useMemo(() => {
-    const m = new Map<string, { short_code: string }>();
-    for (const r of state.rolls) m.set(r.id, { short_code: r.short_code });
+    const m = new Map<string, { short_code: string; order_no: string | null; roll_no: number | null }>();
+    for (const r of state.rolls) {
+      m.set(r.id, {
+        short_code: r.short_code,
+        order_no: r.order_no ?? null,
+        roll_no: r.roll_no ?? null,
+      });
+    }
     return m;
   }, [state.rolls]);
 
@@ -446,11 +452,21 @@ export default function PhotosScreen() {
                   {viewing.kind === 'STAGED' ? 'Staged' : 'In use'}
                 </span>
               )}
-              {viewing.roll_id && rollById.get(viewing.roll_id) && (
-                <span className="font-mono normal-case text-white/80">
-                  {rollById.get(viewing.roll_id)!.short_code}
-                </span>
-              )}
+              {viewing.roll_id && rollById.get(viewing.roll_id) && (() => {
+                const r = rollById.get(viewing.roll_id!)!;
+                return (
+                  <>
+                    <span className="font-mono normal-case text-white/80">
+                      {r.short_code}
+                    </span>
+                    {(r.order_no || r.roll_no != null) && (
+                      <span className="font-mono normal-case text-white/60">
+                        {r.order_no ?? '?'}{r.roll_no != null ? ` · #${r.roll_no}` : ''}
+                      </span>
+                    )}
+                  </>
+                );
+              })()}
             </div>
             {viewing.caption && (
               <p className="mt-2 text-sm font-medium">{viewing.caption}</p>

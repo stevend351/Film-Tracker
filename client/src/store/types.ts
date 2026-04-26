@@ -48,6 +48,10 @@ export interface Roll {
   tagged_at: string;
   tagged_by?: string | null;
   staged_at?: string | null;     // when pulled to kitchen
+  // Supplier label fields. NULL on legacy rows.
+  order_no?: string | null;
+  roll_no?: number | null;
+  production_date?: string | null; // ISO
 }
 
 export interface UsageEvent {

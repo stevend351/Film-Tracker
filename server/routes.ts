@@ -1,6 +1,6 @@
 import type { Express, Request, Response } from "express";
 import type { Server } from "node:http";
-import { storage } from "./storage";
+import { storage, StagingError } from "./storage";
 import {
   authenticate, signSession, setSessionCookie, clearSessionCookie,
   requireAuth, requireAdmin,
@@ -25,6 +25,19 @@ const updateRollSchema = z.object({
   status: z.enum(["STAGED", "IN_USE", "DEPLETED", "OFFLINE"]).optional(),
   location: z.enum(["WAREHOUSE", "KITCHEN"]).optional(),
   override_extra_wrap: z.boolean().optional(),
+});
+
+// Label-driven staging payload. Client mints roll_id + photo_id so an offline
+// retry hits the idempotent path instead of duplicating.
+const stageRollSchema = z.object({
+  roll_id: z.string().min(1),
+  photo_id: z.string().min(1),
+  flavor_id: z.string().min(1),
+  order_no: z.string().min(1),
+  impressions_per_roll: z.number().int().positive(),
+  roll_no: z.number().int().positive(),
+  production_date: z.coerce.date().nullable().optional(),
+  photo_data_url: z.string().min(1),
 });
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -93,6 +106,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(result);
   });
 
+  // Label-driven staging. Validates the supplier label fields against the
+  // matching warehouse pool, mints the short_code server-side, and persists
+  // the roll + staging photo together. Returns 409 with a code on any
+  // verification failure.
+  app.post("/api/rolls/stage", requireAuth, async (req: Request, res: Response) => {
+    const parsed = stageRollSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid stage payload", details: parsed.error.flatten() });
+    }
+    try {
+      const result = await storage.stageRollVerified({
+        ...parsed.data,
+        tagged_by: req.user!.id,
+        taken_by: req.user!.id,
+      });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof StagingError) {
+        return res.status(err.status).json({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
+  });
+
   app.patch("/api/rolls/:id", requireAuth, async (req: Request, res: Response) => {
     const parsed = updateRollSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -133,6 +170,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // -------------------------------------------------------------------------
   // Photos — base64 in-row.
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Admin: wipe all operational data. Used during pilot to scrap test runs
+  // and start clean. Keeps users + flavors so login keeps working. There is
+  // intentionally no soft-delete or audit log; this is a development affordance.
+  // -------------------------------------------------------------------------
+  app.post("/api/admin/wipe", requireAdmin, async (_req: Request, res: Response) => {
+    await storage.wipeOperationalData();
+    res.json({ ok: true });
+  });
+
   app.post("/api/photos", requireAuth, async (req: Request, res: Response) => {
     const parsed = insertKitchenPhotoSchema.safeParse(req.body);
     if (!parsed.success) {

@@ -7,6 +7,7 @@ import { serveStatic } from "./static";
 import { createServer } from "node:http";
 import { attachUser } from "./auth";
 import { runSeed } from "./seed";
+import { ensureSchema } from "./migrate";
 
 const app = express();
 const httpServer = createServer(app);
@@ -72,6 +73,17 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Run idempotent ALTER TABLE migrations before anything touches the schema.
+  // We don't run drizzle-kit push at deploy, so any new column has to land
+  // through ensureSchema. Failure here is fatal -- continuing would just give
+  // confusing 500s when storage tries to read missing columns.
+  try {
+    await ensureSchema();
+  } catch (err) {
+    console.error("[migrate] failed at boot:", err);
+    throw err;
+  }
+
   // Seed flavors + initial users on every boot. Idempotent — no-op once both exist.
   // Skip if SKIP_SEED=1 (used in CI / migrations-only contexts).
   if (process.env.SKIP_SEED !== "1") {
