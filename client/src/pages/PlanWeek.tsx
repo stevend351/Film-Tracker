@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useLocation } from 'wouter';
-import { ArrowRight, Trash2, Plus, Lock, AlertTriangle } from 'lucide-react';
+import { ArrowRight, Trash2, Plus, Lock, AlertTriangle, X } from 'lucide-react';
 import { useStore, flavorInventory, buildPickList, activePlan as selectActivePlan } from '@/store/store';
 import type { ProductionPlan, ProductionPlanRow } from '@/store/types';
 import { Input } from '@/components/ui/input';
@@ -58,6 +58,10 @@ function ActiveRunView({
   const { toast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [removingFlavorId, setRemovingFlavorId] = useState<string | null>(null);
+  const removingFlavor = removingFlavorId
+    ? state.flavors.find(f => f.id === removingFlavorId)
+    : null;
 
   return (
     <div className="px-4 py-4 pb-32">
@@ -76,17 +80,34 @@ function ActiveRunView({
         <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">
           What's in this run
         </p>
-        <ul className="space-y-2">
+        <ul className="space-y-1">
           {plan.rows.map((row, i) => {
             const flavor = state.flavors.find(f => f.id === row.flavor_id);
             if (!flavor) return null;
             const need = Math.ceil(row.batches * row.bars_per_batch * (1 + row.buffer_pct));
+            const onlyRow = plan.rows.length === 1;
             return (
-              <li key={i} className="flex items-baseline justify-between text-sm">
-                <span className="font-medium">{flavor.name}</span>
-                <span className="font-mono text-xs text-muted-foreground">
-                  {row.batches} {row.batches === 1 ? 'batch' : 'batches'} · {need.toLocaleString()} imp
-                </span>
+              <li
+                key={i}
+                className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5 -mx-1 hover:bg-background/40"
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{flavor.name}</p>
+                  <p className="font-mono text-xs text-muted-foreground">
+                    {row.batches} {row.batches === 1 ? 'batch' : 'batches'} · {need.toLocaleString()} imp
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => !onlyRow && setRemovingFlavorId(row.flavor_id)}
+                  disabled={onlyRow}
+                  className="hover-elevate rounded-md p-1.5 text-muted-foreground disabled:opacity-30 disabled:cursor-not-allowed"
+                  aria-label={onlyRow ? 'Cannot remove the only flavor' : `Remove ${flavor.name}`}
+                  title={onlyRow ? 'Delete the plan instead to remove the last flavor' : `Remove ${flavor.name}`}
+                  data-testid={`button-remove-row-${flavor.prefix}`}
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </li>
             );
           })}
@@ -151,6 +172,42 @@ function ActiveRunView({
               }}
             >
               Delete plan
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Confirm-remove-row modal */}
+      <AlertDialog
+        open={!!removingFlavorId}
+        onOpenChange={(open) => !open && setRemovingFlavorId(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Remove {removingFlavor?.name ?? 'flavor'} from plan?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Rolls already staged for this flavor stay where they are. They
+              just won't count against this plan's gap math anymore.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-remove-row">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              data-testid="button-confirm-remove-row"
+              onClick={async () => {
+                if (!removingFlavorId) return;
+                const r = await actions.removePlanRow(plan.id, removingFlavorId);
+                if (r.ok) {
+                  toast({ title: 'Flavor removed' });
+                  setRemovingFlavorId(null);
+                } else {
+                  toast({ title: 'Remove failed', description: r.error, variant: 'destructive' });
+                }
+              }}
+            >
+              Remove
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -288,12 +345,25 @@ function ExtendPlanSheet({
           <Select onValueChange={addRow}>
             <SelectTrigger className="h-12" data-testid="select-add-flavor-extend">
               <Plus className="h-4 w-4 mr-2" />
-              <SelectValue placeholder="Add flavor…" />
+              <SelectValue
+                placeholder={
+                  availableFlavors.length === 0
+                    ? 'All flavors already in plan'
+                    : 'Add flavor…'
+                }
+              />
             </SelectTrigger>
-            <SelectContent>
-              {availableFlavors.map(f => (
-                <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
-              ))}
+            {/* z-[70] keeps the dropdown above the modal backdrop (z-[60]). */}
+            <SelectContent className="z-[70]" position="popper" sideOffset={4}>
+              {availableFlavors.length === 0 ? (
+                <div className="px-2 py-3 text-xs text-muted-foreground">
+                  Every flavor is in the plan. Edit batches above instead.
+                </div>
+              ) : (
+                availableFlavors.map(f => (
+                  <SelectItem key={f.id} value={f.id}>{f.name}</SelectItem>
+                ))
+              )}
             </SelectContent>
           </Select>
         </div>

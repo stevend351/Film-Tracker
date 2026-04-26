@@ -478,15 +478,26 @@ function FocusView({
           />
         </div>
 
-        <button
-          type="button"
-          onClick={submit}
-          disabled={!formReady || busy}
-          className="hover-elevate active-elevate-2 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md border border-primary-border bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50"
-          data-testid="button-stage-save"
-        >
-          {busy ? 'Saving...' : 'Verify and stage'}
-        </button>
+        <div className="grid gap-2">
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!formReady || busy}
+            className="hover-elevate active-elevate-2 inline-flex h-12 w-full items-center justify-center gap-2 rounded-md border border-primary-border bg-primary text-sm font-semibold text-primary-foreground disabled:opacity-50"
+            data-testid="button-stage-save"
+          >
+            {busy ? 'Saving...' : 'Verify and stage'}
+          </button>
+          <button
+            type="button"
+            onClick={onBack}
+            disabled={busy}
+            className="hover-elevate inline-flex h-10 w-full items-center justify-center gap-2 rounded-md border border-border bg-card text-sm font-medium text-muted-foreground disabled:opacity-50"
+            data-testid="button-focus-cancel"
+          >
+            Cancel — pick a different flavor
+          </button>
+        </div>
       </section>
 
       {/* Confirmation modal. */}

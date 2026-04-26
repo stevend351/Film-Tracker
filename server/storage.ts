@@ -56,6 +56,7 @@ export interface IStorage {
   finishPlan(id: string): Promise<ProductionPlan | undefined>;
   deletePlan(id: string): Promise<void>;
   extendPlan(id: string, additionalRows: { flavor_id: string; batches: number; bars_per_batch: number; buffer_pct: number }[]): Promise<ProductionPlan | undefined>;
+  removePlanRow(id: string, flavor_id: string): Promise<ProductionPlan | undefined>;
 
   // photos
   listPhotos(): Promise<KitchenPhoto[]>;
@@ -494,10 +495,43 @@ export class DatabaseStorage implements IStorage {
       if (cur.status !== "LOCKED") {
         throw new StagingError("PLAN_NOT_LOCKED", "Cannot extend a finished plan.");
       }
-      const merged = [...(cur.rows ?? []), ...additionalRows];
+      // Dedupe: drop any flavor_id already in the plan. Each flavor lives on
+      // exactly one row; you scale a flavor by editing batches, not by adding
+      // it again.
+      const existing = new Set((cur.rows ?? []).map((r) => r.flavor_id));
+      const novel = additionalRows.filter((r) => !existing.has(r.flavor_id));
+      const merged = [...(cur.rows ?? []), ...novel];
       const r = await tx
         .update(production_plans)
         .set({ rows: merged })
+        .where(eq(production_plans.id, id))
+        .returning();
+      return r[0];
+    });
+  }
+
+  async removePlanRow(
+    id: string,
+    flavor_id: string,
+  ): Promise<ProductionPlan | undefined> {
+    return db.transaction(async (tx) => {
+      const cur = (
+        await tx.select().from(production_plans).where(eq(production_plans.id, id)).limit(1)
+      )[0];
+      if (!cur) return undefined;
+      if (cur.status !== "LOCKED") {
+        throw new StagingError("PLAN_NOT_LOCKED", "Cannot edit a finished plan.");
+      }
+      const next = (cur.rows ?? []).filter((r) => r.flavor_id !== flavor_id);
+      // Refuse to leave a plan with zero rows. The user should delete the
+      // plan instead. The UI disables the X button on the last row already;
+      // this is the server-side guard.
+      if (next.length === 0) {
+        throw new StagingError("PLAN_EMPTY", "A plan must keep at least one flavor. Delete the plan instead.");
+      }
+      const r = await tx
+        .update(production_plans)
+        .set({ rows: next })
         .where(eq(production_plans.id, id))
         .returning();
       return r[0];

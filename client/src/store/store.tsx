@@ -345,6 +345,8 @@ export interface StoreActions {
   wipeData: () => Promise<void>;
   // Append rows to the active locked plan.
   extendActivePlan: (rows: ProductionPlanRow[]) => Promise<{ ok: boolean; error?: string }>;
+  // Remove one flavor row from a plan. Refuses to empty the plan.
+  removePlanRow: (plan_id: string, flavor_id: string) => Promise<{ ok: boolean; error?: string }>;
   // Delete a plan by id. Admin only. Detaches rolls + usage events.
   deletePlan: (id: string) => Promise<{ ok: boolean; error?: string }>;
   // Mark the active locked plan FINISHED. Locks out further attribution.
@@ -476,6 +478,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     onSuccess: invalidate,
     onError: onError('Delete plan'),
+  });
+
+  const planRowDeleteMut = useMutation({
+    mutationFn: async (vars: { id: string; flavor_id: string }) => {
+      const res = await apiRequest(
+        'DELETE',
+        `/api/plans/${vars.id}/rows/${vars.flavor_id}`,
+        undefined,
+      );
+      return res.json();
+    },
+    onSuccess: invalidate,
+    onError: onError('Remove flavor'),
   });
 
   const photoMut = useMutation({
@@ -630,6 +645,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     },
 
+    async removePlanRow(plan_id, flavor_id) {
+      try {
+        await planRowDeleteMut.mutateAsync({ id: plan_id, flavor_id });
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+
     async deletePlan(id) {
       try {
         await planDeleteMut.mutateAsync(id);
@@ -668,7 +692,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       queryClient.invalidateQueries({ queryKey: STATE_KEY });
     },
     // The mutation hooks are stable across renders, so depend only on `state`.
-  }), [state, shipmentMut, rollMut, rollPatchMut, usageMut, planMut, planExtendMut, planFinishMut, planDeleteMut, photoMut, queryClient]);
+  }), [state, shipmentMut, rollMut, rollPatchMut, usageMut, planMut, planExtendMut, planFinishMut, planDeleteMut, planRowDeleteMut, photoMut, queryClient]);
 
   return (
     <StoreContext.Provider value={{ state, actions, isLoading, isError }}>

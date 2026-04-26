@@ -214,6 +214,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+  // Remove a single flavor row from a LOCKED plan. Refuses to empty the plan.
+  app.delete("/api/plans/:id/rows/:flavorId", requireAdmin, async (req: Request, res: Response) => {
+    try {
+      const result = await storage.removePlanRow(
+        String(req.params.id),
+        String(req.params.flavorId),
+      );
+      if (!result) return res.status(404).json({ error: "Plan not found" });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof StagingError) {
+        return res.status(err.status).json({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
+  });
+
   // -------------------------------------------------------------------------
   // Photos — base64 in-row.
   // -------------------------------------------------------------------------
