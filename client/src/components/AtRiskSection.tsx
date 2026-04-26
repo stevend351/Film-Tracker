@@ -363,7 +363,7 @@ function generateOrderPdf(order: CombinedOrder) {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(12);
     const headline = line.triggers
-      ? `${line.flavor.name}  —  AT RISK`
+      ? `${line.flavor.name}  ·  AT RISK`
       : `${line.flavor.name}`;
     if (line.triggers) doc.setTextColor(180, 30, 30);
     doc.text(headline, margin, y);
