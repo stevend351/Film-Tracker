@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
 import { Package, Calendar, ArrowRightLeft, Boxes, Camera, BarChart3, ClipboardList, ShoppingCart } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -35,10 +35,22 @@ const DESKTOP_NAV: NavItem[] = [
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
+  const [location] = useLocation();
+  const mainRef = useRef<HTMLElement>(null);
+
+  // Reset scroll on every route change. Without this, navigating from a
+  // long Stage screen to Log lands you at the bottom of the new page.
+  // Both window and the scrolling <main> need to be reset since either can
+  // be the active scroller depending on viewport.
+  useEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTo({ top: 0, behavior: 'auto' });
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }, [location]);
+
   return (
     <div className="flex min-h-dvh flex-col bg-background">
       <SyncBanner />
-      <main className="flex-1 overflow-y-auto pb-24 md:pb-4">{children}</main>
+      <main ref={mainRef} className="flex-1 overflow-y-auto pb-24 md:pb-4">{children}</main>
       <BottomNav />
     </div>
   );

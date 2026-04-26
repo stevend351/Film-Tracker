@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useSearch } from 'wouter';
-import { CheckCircle2, ChevronRight, ArrowLeft, PartyPopper, Trash2, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, ChevronRight, ArrowLeft, PartyPopper, Trash2, AlertTriangle, ClipboardList } from 'lucide-react';
 import {
   useStore,
   computeStillNeeded,
@@ -99,8 +99,38 @@ export default function TransferScreen() {
     );
   }
 
-  // No plan -> free-form staging.
-  return <FreeStageView />;
+  // No plan -> staging is locked. Brenda was staging rolls without a plan,
+  // which made FIFO and gap math meaningless. Force her to start a plan first.
+  return <NoPlanView />;
+}
+
+// ---------------------------------------------------------------------------
+// No active plan: staging requires a locked plan. Steer to the Plan screen.
+// ---------------------------------------------------------------------------
+function NoPlanView() {
+  const [, setLocation] = useLocation();
+  return (
+    <div className="px-4 py-4 pb-32">
+      <header className="mb-4">
+        <h1 className="text-xl font-semibold tracking-tight">Stage Rolls</h1>
+      </header>
+      <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-6 text-center">
+        <ClipboardList className="h-10 w-10 text-amber-600 dark:text-amber-400 mx-auto" />
+        <h2 className="mt-3 text-lg font-semibold">No active plan</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Staging rolls without a plan throws off FIFO and gap math. Start a production plan first, then come back to stage what's needed.
+        </p>
+        <button
+          type="button"
+          onClick={() => setLocation('/plan')}
+          className="hover-elevate active-elevate-2 mt-5 inline-flex h-11 items-center justify-center gap-2 rounded-md border border-primary-border bg-primary px-5 text-sm font-semibold text-primary-foreground"
+          data-testid="button-go-plan"
+        >
+          Go to Plan
+        </button>
+      </section>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
