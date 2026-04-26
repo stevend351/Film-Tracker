@@ -1,6 +1,7 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/queryClient';
+import { toast } from '@/hooks/use-toast';
 import type {
   Flavor, Shipment, WarehousePool, Roll, UsageEvent,
   ProductionPlan, KitchenPhoto, PickListLine, Location,
@@ -229,12 +230,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // ------ mutations ------
   const invalidate = () => queryClient.invalidateQueries({ queryKey: STATE_KEY });
 
+  // Surface server failures as toasts. Without this, fired-and-forgotten
+  // mutations would silently swallow 4xx/5xx and the page would lie about
+  // success.
+  const onError = (label: string) => (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    toast({ title: `${label} failed`, description: msg, variant: 'destructive' });
+  };
+
   const shipmentMut = useMutation({
     mutationFn: async (payload: { shipment: Shipment; pools: WarehousePool[] }) => {
       const res = await apiRequest('POST', '/api/shipments', payload);
       return res.json();
     },
     onSuccess: invalidate,
+    onError: onError('Receive shipment'),
   });
 
   const rollMut = useMutation({
@@ -243,6 +253,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return res.json();
     },
     onSuccess: invalidate,
+    onError: onError('Tag roll'),
   });
 
   const rollPatchMut = useMutation({
@@ -251,6 +262,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return res.json();
     },
     onSuccess: invalidate,
+    onError: onError('Update roll'),
   });
 
   const usageMut = useMutation({
@@ -259,6 +271,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return res.json();
     },
     onSuccess: invalidate,
+    onError: onError('Log usage'),
   });
 
   const planMut = useMutation({
@@ -267,6 +280,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return res.json();
     },
     onSuccess: invalidate,
+    onError: onError('Save plan'),
   });
 
   const photoMut = useMutation({
@@ -275,6 +289,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return res.json();
     },
     onSuccess: invalidate,
+    onError: onError('Save photo'),
   });
 
   // ------ actions surface ------

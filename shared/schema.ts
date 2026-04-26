@@ -119,13 +119,21 @@ export const insertFlavorSchema = createInsertSchema(flavors).extend({
   aliases: z.array(z.string()).nullable().optional(),
 });
 
+// JSON.stringify turns Date into ISO string. z.date() rejects strings, so use
+// z.coerce.date() for every timestamp column we accept on the wire. Without
+// this, every POST that includes a timestamp 400s with a useless Zod error.
 export const insertShipmentSchema = createInsertSchema(shipments).omit({
   created_at: true,
+}).extend({
+  shipped_at: z.coerce.date(),
+  received_at: z.coerce.date(),
 });
 
 export const insertWarehousePoolSchema = createInsertSchema(warehouse_pools);
 
-export const insertRollSchema = createInsertSchema(rolls);
+export const insertRollSchema = createInsertSchema(rolls).extend({
+  tagged_at: z.coerce.date(),
+});
 
 export const insertUsageEventSchema = createInsertSchema(usage_events).omit({
   created_at: true,
@@ -144,6 +152,7 @@ export const insertProductionPlanSchema = createInsertSchema(production_plans).o
 
 export const insertKitchenPhotoSchema = createInsertSchema(kitchen_photos).extend({
   flavor_ids: z.array(z.string()).nullable().optional(),
+  taken_at: z.coerce.date(),
 });
 
 // ---------------------------------------------------------------------------
