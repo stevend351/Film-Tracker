@@ -7,6 +7,7 @@ import {
   computePlanGaps,
   activePlan,
   rollAge,
+  uuid,
   type PlanGap,
   type RollWithUsage,
   type RollAgeKind,
@@ -609,6 +610,12 @@ function FocusView({
   const [photo, setPhoto] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmed, setConfirmed] = useState<Roll | null>(null);
+  // Stable ids for this attempt. Persist across retries so a flaky network
+  // (first POST timed out, second POST is a retry) hits the server's
+  // idempotent path on roll_id instead of colliding on (pool, roll_no) and
+  // throwing DUPLICATE_ROLL_NO. Reset only after a successful save.
+  const [rollId, setRollId] = useState(() => uuid('r'));
+  const [photoId, setPhotoId] = useState(() => uuid('ph'));
 
   const rollNoNum = parseInt(rollNo, 10);
   const formReady =
@@ -618,6 +625,11 @@ function FocusView({
   function reset() {
     setRollNo('');
     setPhoto('');
+    // New ids for the next roll. The previous attempt landed (or was
+    // explicitly cancelled), so retrying with the old ids would now hit
+    // the wrong roll.
+    setRollId(uuid('r'));
+    setPhotoId(uuid('ph'));
   }
 
   async function submit() {
@@ -630,6 +642,8 @@ function FocusView({
       roll_no: rollNoNum,
       production_date: productionDate ? new Date(productionDate) : null,
       photo_data_url: photo,
+      roll_id: rollId,
+      photo_id: photoId,
     });
     setBusy(false);
     if (result.ok) {
@@ -791,6 +805,12 @@ function FreeStageView() {
   const [busy, setBusy] = useState(false);
   const [confirmed, setConfirmed] = useState<Roll | null>(null);
   const [staged, setStaged] = useState<Roll[]>([]);
+  // Stable ids per attempt. Same reasoning as FocusView: a flaky network
+  // (first POST timed out, second POST is a retry) needs to hit the server's
+  // idempotent path on roll_id instead of colliding on (pool, roll_no) and
+  // throwing DUPLICATE_ROLL_NO. Reset only after a successful save.
+  const [rollId, setRollId] = useState(() => uuid('r'));
+  const [photoId, setPhotoId] = useState(() => uuid('ph'));
 
   const flavor = state.flavors.find(f => f.id === flavorId) ?? null;
   const impNum = parseInt(imp, 10);
@@ -809,6 +829,8 @@ function FreeStageView() {
     setRollNo('');
     setProdDate('');
     setPhoto('');
+    setRollId(uuid('r'));
+    setPhotoId(uuid('ph'));
   }
 
   async function submit() {
@@ -821,6 +843,8 @@ function FreeStageView() {
       roll_no: rollNoNum,
       production_date: prodDate ? new Date(prodDate) : null,
       photo_data_url: photo,
+      roll_id: rollId,
+      photo_id: photoId,
     });
     setBusy(false);
     if (result.ok) {

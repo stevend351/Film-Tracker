@@ -626,7 +626,7 @@ export function buildCombinedOrder(state: State): CombinedOrder {
 
 // uuid-shaped id for client-minted rows. crypto.randomUUID is on every modern
 // browser including iOS Safari 15.4+.
-function uuid(prefix: string): string {
+export function uuid(prefix: string): string {
   const id =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
@@ -651,6 +651,11 @@ export interface StageRollVerifiedInput {
   roll_no: number;
   production_date?: Date | null;
   photo_data_url: string;
+  // Optional caller-supplied ids. When present, retries hit the server's
+  // idempotent path on roll_id instead of colliding on (pool, roll_no).
+  // The form view persists these across retry attempts.
+  roll_id?: string;
+  photo_id?: string;
 }
 
 export interface StageRollVerifiedResult {
@@ -909,10 +914,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
 
     async stageRollVerified(input) {
-      // Mint client-side ids so an offline retry hits the idempotent path on
-      // the server instead of duplicating.
-      const roll_id = uuid('r');
-      const photo_id = uuid('ph');
+      // Caller may pass stable ids so retries hit the server's idempotent
+      // path on roll_id. If no ids are provided we mint fresh ones (single-
+      // attempt callers, tests, scripts).
+      const roll_id = input.roll_id ?? uuid('r');
+      const photo_id = input.photo_id ?? uuid('ph');
       try {
         const res = await apiRequest('POST', '/api/rolls/stage', {
           roll_id,
