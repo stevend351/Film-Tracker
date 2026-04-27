@@ -157,10 +157,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // -------------------------------------------------------------------------
-  // Production plans — admin only. Upsert on plan.id (same week saved twice
-  // replaces the rows array).
+  // Production plans — open to kitchen. Brenda locks the plan to start a run
+  // and extends it mid-run when staging reveals an unplanned flavor. Upsert
+  // on plan.id (same week saved twice replaces the rows array).
   // -------------------------------------------------------------------------
-  app.post("/api/plans", requireAdmin, async (req: Request, res: Response) => {
+  app.post("/api/plans", requireAuth, async (req: Request, res: Response) => {
     const parsed = insertProductionPlanSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid plan", details: parsed.error.flatten() });
@@ -194,7 +195,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       buffer_pct: z.number(),
     })),
   });
-  app.patch("/api/plans/:id", requireAdmin, async (req: Request, res: Response) => {
+  app.patch("/api/plans/:id", requireAuth, async (req: Request, res: Response) => {
     const parsed = extendPlanSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: "Invalid extension", details: parsed.error.flatten() });
@@ -212,13 +213,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Delete a plan (any status). Detaches rolls/usage events but keeps them.
-  app.delete("/api/plans/:id", requireAdmin, async (req: Request, res: Response) => {
+  app.delete("/api/plans/:id", requireAuth, async (req: Request, res: Response) => {
     await storage.deletePlan(String(req.params.id));
     res.json({ ok: true });
   });
 
   // Remove a single flavor row from a LOCKED plan. Refuses to empty the plan.
-  app.delete("/api/plans/:id/rows/:flavorId", requireAdmin, async (req: Request, res: Response) => {
+  app.delete("/api/plans/:id/rows/:flavorId", requireAuth, async (req: Request, res: Response) => {
     try {
       const result = await storage.removePlanRow(
         String(req.params.id),
