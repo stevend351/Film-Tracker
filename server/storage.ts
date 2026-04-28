@@ -50,6 +50,7 @@ export interface IStorage {
   // usage events
   listUsageEvents(): Promise<UsageEvent[]>;
   createUsageEvent(event: InsertUsageEvent): Promise<UsageEvent>;
+  deleteUsageEvent(id: string): Promise<{ ok: true; roll_id: string; new_status: string } | { ok: false; error: string }>;
 
   // plans
   listPlans(): Promise<ProductionPlan[]>;
@@ -381,6 +382,36 @@ export class DatabaseStorage implements IStorage {
   // ---- usage events -----------------------------------------------------
   async listUsageEvents(): Promise<UsageEvent[]> {
     return db.select().from(usage_events);
+  }
+
+  // Admin-only. Removes a usage event and recomputes the affected roll's
+  // status from the remaining usage rows. Used to undo a misfired log entry
+  // (e.g. logged against the wrong roll) and bring DEPLETED rolls back to life
+  // without raw SQL access.
+  async deleteUsageEvent(id: string): Promise<{ ok: true; roll_id: string; new_status: string } | { ok: false; error: string }> {
+    return db.transaction(async (tx) => {
+      const existing = (await tx.select().from(usage_events).where(eq(usage_events.id, id)).limit(1))[0];
+      if (!existing) return { ok: false as const, error: "Usage event not found." };
+      const rollId = existing.roll_id;
+      await tx.delete(usage_events).where(eq(usage_events.id, id));
+      const rollRow = (await tx.select().from(rolls).where(eq(rolls.id, rollId)).limit(1))[0];
+      if (!rollRow) return { ok: true as const, roll_id: rollId, new_status: "unknown" };
+      const totalRow = await tx
+        .select({ s: dsql<string>`COALESCE(SUM(${usage_events.impressions_used}), 0)` })
+        .from(usage_events)
+        .where(eq(usage_events.roll_id, rollId));
+      const total = Number(totalRow[0].s);
+      // Walk status back: total >= cap stays DEPLETED, total > 0 is IN_USE,
+      // total === 0 returns to STAGED. Location stays put.
+      let newStatus: string;
+      if (total >= rollRow.impressions_per_roll) newStatus = "DEPLETED";
+      else if (total > 0) newStatus = "IN_USE";
+      else newStatus = "STAGED";
+      if (newStatus !== rollRow.status) {
+        await tx.update(rolls).set({ status: newStatus }).where(eq(rolls.id, rollId));
+      }
+      return { ok: true as const, roll_id: rollId, new_status: newStatus };
+    });
   }
 
   async createUsageEvent(event: InsertUsageEvent): Promise<UsageEvent> {

@@ -156,6 +156,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(result);
   });
 
+  // Admin-only. Undo a misfired log entry. Deletes the usage row and
+  // recomputes the roll's status (DEPLETED -> IN_USE -> STAGED) from
+  // what's left.
+  app.delete("/api/usage-events/:id", requireAdmin, async (req: Request, res: Response) => {
+    const result = await storage.deleteUsageEvent(req.params.id);
+    if (!result.ok) return res.status(404).json(result);
+    res.json(result);
+  });
+
   // -------------------------------------------------------------------------
   // Production plans — open to kitchen. Brenda locks the plan to start a run
   // and extends it mid-run when staging reveals an unplanned flavor. Upsert
